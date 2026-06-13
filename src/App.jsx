@@ -47,7 +47,6 @@ function stageLabel(stage) {
   return map[stage] || stage;
 }
 
-// Hash simple côté client (SHA-256 via Web Crypto)
 async function hashPassword(password) {
   const encoder = new TextEncoder();
   const data = encoder.encode(password + "mc2026salt");
@@ -159,16 +158,12 @@ function useLeaderboard(matches) {
 function LoginScreen({ onLogin }) {
   const [name, setName]         = useState("");
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm]   = useState("");
   const [loading, setLoading]   = useState(false);
   const [err, setErr]           = useState("");
-  // États : "idle" | "needs_password" | "new_user"
-  const [step, setStep]         = useState("idle");
-  const [foundUser, setFoundUser] = useState(null);
 
-  const handleCheckName = async () => {
+  const handleLogin = async () => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed || !password) return;
     setLoading(true); setErr("");
 
     const { data } = await supabase
@@ -177,88 +172,39 @@ function LoginScreen({ onLogin }) {
       .eq("name", trimmed)
       .maybeSingle();
 
-    setLoading(false);
-
-    if (data) {
-      setFoundUser(data);
-      if (data.password) {
-        // Participant existant avec mot de passe → demande le mot de passe
-        setStep("needs_password");
-      } else {
-        // Participant existant sans mot de passe → crée un mot de passe
-        setStep("set_password");
-      }
-    } else {
-      // Nouveau participant
-      setStep("new_user");
-    }
-  };
-
-  const handleLogin = async () => {
-    const trimmed = name.trim();
-    if (!trimmed || !password) return;
-    setLoading(true); setErr("");
-
     const hashed = await hashPassword(password);
 
-    if (step === "needs_password") {
-      // Vérifie le mot de passe
-      if (hashed !== foundUser.password) {
-        setErr("Mot de passe incorrect.");
-        setLoading(false);
-        return;
-      }
-      onLogin({ id: foundUser.id, name: foundUser.name });
-
-    } else if (step === "set_password" || step === "new_user") {
-      // Crée ou met à jour le mot de passe
-      if (password.length < 4) {
-        setErr("Mot de passe trop court (min. 4 caractères).");
-        setLoading(false);
-        return;
-      }
-      if (password !== confirm) {
-        setErr("Les mots de passe ne correspondent pas.");
-        setLoading(false);
-        return;
-      }
-
-      if (step === "set_password") {
-        // Met à jour le mot de passe pour un utilisateur existant
+    if (data) {
+      if (!data.password) {
+        // Existant sans mot de passe → définit le mot de passe
         const { error } = await supabase
           .from("participants")
           .update({ password: hashed })
-          .eq("id", foundUser.id);
+          .eq("id", data.id);
         if (error) { setErr("Erreur, réessaie."); setLoading(false); return; }
-        onLogin({ id: foundUser.id, name: foundUser.name });
-
+        onLogin({ id: data.id, name: data.name });
+      } else if (data.password === hashed) {
+        // Bon mot de passe
+        onLogin({ id: data.id, name: data.name });
       } else {
-        // Crée un nouveau participant
-        const { data, error } = await supabase
-          .from("participants")
-          .insert({ name: trimmed, password: hashed })
-          .select("id, name")
-          .single();
-        if (error || !data) { setErr("Erreur, réessaie."); setLoading(false); return; }
-        onLogin(data);
+        setErr("Mot de passe incorrect.");
       }
+    } else {
+      // Nouveau participant
+      if (password.length < 4) {
+        setErr("Mot de passe trop court (min. 4 caractères).");
+        setLoading(false); return;
+      }
+      const { data: newUser, error } = await supabase
+        .from("participants")
+        .insert({ name: trimmed, password: hashed })
+        .select("id, name")
+        .single();
+      if (error || !newUser) { setErr("Erreur, réessaie."); setLoading(false); return; }
+      onLogin(newUser);
     }
 
     setLoading(false);
-  };
-
-  const resetStep = () => {
-    setStep("idle");
-    setPassword("");
-    setConfirm("");
-    setErr("");
-    setFoundUser(null);
-  };
-
-  const stepTitles = {
-    needs_password: `Bon retour, ${name.trim()} 👋`,
-    set_password:   `Crée ton mot de passe, ${name.trim()}`,
-    new_user:       `Bienvenue, ${name.trim()} !`,
   };
 
   return (
@@ -268,7 +214,6 @@ function LoginScreen({ onLogin }) {
       fontFamily: "'Segoe UI', system-ui, sans-serif", padding: 24,
     }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
-
       <div style={{ marginBottom: 8, textAlign: "center" }}>
         <div style={{ fontSize: 13, color: "#d97706", fontWeight: 800, letterSpacing: 3, textTransform: "uppercase" }}>
           Moses Consulting
@@ -284,100 +229,43 @@ function LoginScreen({ onLogin }) {
       </div>
 
       <div style={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 16, padding: 28, width: "100%", maxWidth: 380 }}>
-
-        {/* ÉTAPE 1 — Saisie du prénom */}
-        {step === "idle" && (
-          <>
-            <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 8 }}>Ton prénom</label>
-            <input
-              value={name} onChange={e => setName(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleCheckName()}
-              placeholder="Ex : Junbi, Thierry…"
-              disabled={loading}
-              style={{
-                width: "100%", background: "#1f2937", border: "1px solid #374151",
-                borderRadius: 10, color: "#f9fafb", fontSize: 16, fontWeight: 600,
-                padding: "12px 14px", outline: "none", boxSizing: "border-box",
-              }}
-            />
-            {err && <div style={{ color: "#f87171", fontSize: 12, marginTop: 6 }}>{err}</div>}
-            <button onClick={handleCheckName} disabled={loading || !name.trim()} style={{
-              width: "100%", background: name.trim() ? "#d97706" : "#374151",
-              color: "#fff", border: "none", borderRadius: 10,
-              padding: "13px 0", fontSize: 15, fontWeight: 800,
-              cursor: name.trim() ? "pointer" : "not-allowed", marginTop: 12,
-            }}>
-              {loading ? "Vérification…" : "Continuer →"}
-            </button>
-          </>
-        )}
-
-        {/* ÉTAPE 2 — Mot de passe */}
-        {step !== "idle" && (
-          <>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontWeight: 800, color: "#f9fafb", fontSize: 16, marginBottom: 4 }}>
-                {stepTitles[step]}
-              </div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>
-                {step === "needs_password" && "Entre ton mot de passe pour accéder à ton compte."}
-                {step === "set_password"   && "Première connexion — définis un mot de passe pour sécuriser ton compte."}
-                {step === "new_user"       && "Nouveau participant — crée ton mot de passe."}
-              </div>
-            </div>
-
-            <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 6 }}>Mot de passe</label>
-            <input
-              type="password" value={password}
-              onChange={e => setPassword(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && !confirm && step === "needs_password" && handleLogin()}
-              placeholder="••••••••"
-              disabled={loading}
-              style={{
-                width: "100%", background: "#1f2937", border: "1px solid #374151",
-                borderRadius: 10, color: "#f9fafb", fontSize: 16,
-                padding: "12px 14px", outline: "none", boxSizing: "border-box", marginBottom: 10,
-              }}
-            />
-
-            {(step === "set_password" || step === "new_user") && (
-              <>
-                <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 6 }}>Confirme le mot de passe</label>
-                <input
-                  type="password" value={confirm}
-                  onChange={e => setConfirm(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && handleLogin()}
-                  placeholder="••••••••"
-                  disabled={loading}
-                  style={{
-                    width: "100%", background: "#1f2937", border: "1px solid #374151",
-                    borderRadius: 10, color: "#f9fafb", fontSize: 16,
-                    padding: "12px 14px", outline: "none", boxSizing: "border-box", marginBottom: 10,
-                  }}
-                />
-              </>
-            )}
-
-            {err && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 8 }}>{err}</div>}
-
-            <button onClick={handleLogin} disabled={loading || !password} style={{
-              width: "100%", background: password ? "#d97706" : "#374151",
-              color: "#fff", border: "none", borderRadius: 10,
-              padding: "13px 0", fontSize: 15, fontWeight: 800,
-              cursor: password ? "pointer" : "not-allowed", marginTop: 4,
-            }}>
-              {loading ? "Connexion…" : step === "needs_password" ? "Se connecter →" : "Créer mon compte →"}
-            </button>
-
-            <button onClick={resetStep} style={{
-              width: "100%", background: "none", border: "none",
-              color: "#6b7280", fontSize: 13, cursor: "pointer", marginTop: 12,
-              textDecoration: "underline",
-            }}>
-              ← Changer de prénom
-            </button>
-          </>
-        )}
+        <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 6 }}>Prénom</label>
+        <input
+          value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && document.getElementById("pwd").focus()}
+          placeholder="Ex : Junbi, Thierry…"
+          disabled={loading}
+          style={{
+            width: "100%", background: "#1f2937", border: "1px solid #374151",
+            borderRadius: 10, color: "#f9fafb", fontSize: 16, fontWeight: 600,
+            padding: "12px 14px", outline: "none", boxSizing: "border-box", marginBottom: 12,
+          }}
+        />
+        <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 6 }}>Mot de passe</label>
+        <input
+          id="pwd" type="password"
+          value={password} onChange={e => setPassword(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleLogin()}
+          placeholder="••••••••"
+          disabled={loading}
+          style={{
+            width: "100%", background: "#1f2937", border: "1px solid #374151",
+            borderRadius: 10, color: "#f9fafb", fontSize: 16,
+            padding: "12px 14px", outline: "none", boxSizing: "border-box",
+          }}
+        />
+        <div style={{ fontSize: 11, color: "#4b5563", marginTop: 6, marginBottom: 4 }}>
+          Nouveau ? Entre ton prénom et choisis un mot de passe pour créer ton compte.
+        </div>
+        {err && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 4 }}>{err}</div>}
+        <button onClick={handleLogin} disabled={loading || !name.trim() || !password} style={{
+          width: "100%", background: name.trim() && password ? "#d97706" : "#374151",
+          color: "#fff", border: "none", borderRadius: 10,
+          padding: "13px 0", fontSize: 15, fontWeight: 800,
+          cursor: name.trim() && password ? "pointer" : "not-allowed", marginTop: 12,
+        }}>
+          {loading ? "Connexion…" : "Entrer →"}
+        </button>
       </div>
     </div>
   );
@@ -507,7 +395,7 @@ function MatchCard({ match, pronostic, onSave }) {
             )}
           </div>
         ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ color: "#9ca3af", fontSize: 12 }}>Mon pronostic :</span>
             {[{ val: h, set: setH }, { val: a, set: setA }].map((inp, i) => (
               <input key={i} type="number" min="0" max="20" value={inp.val}
@@ -543,7 +431,7 @@ function MatchCard({ match, pronostic, onSave }) {
   );
 }
 
-// ─── ONGLET PRONOSTICS (lecture seule) ───────────────────────────────────────
+// ─── ONGLET PRONOSTICS (lecture seule, responsive) ────────────────────────────
 
 function AllPronostics({ matches, currentUser }) {
   const [allPronostics, setAllPronostics] = useState([]);
@@ -564,7 +452,6 @@ function AllPronostics({ matches, currentUser }) {
     load();
   }, []);
 
-  // Matchs ayant au moins un pronostic ou déjà terminés
   const relevantMatches = matches.filter(m =>
     m.status === "finished" || m.status === "live" ||
     allPronostics.some(p => p.match_id === m.id)
@@ -587,95 +474,104 @@ function AllPronostics({ matches, currentUser }) {
 
   return (
     <div>
-      {/* Filtre par match */}
-      <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button onClick={() => setSelectedMatch(null)} style={{
-          background: !selectedMatch ? "#d97706" : "#1f2937",
-          color: !selectedMatch ? "#fff" : "#9ca3af",
-          border: "none", borderRadius: 8, padding: "6px 12px",
-          fontSize: 12, fontWeight: 700, cursor: "pointer",
-        }}>Tous</button>
-        {relevantMatches.map(m => (
-          <button key={m.id} onClick={() => setSelectedMatch(m.id === selectedMatch ? null : m.id)} style={{
-            background: selectedMatch === m.id ? "#d97706" : "#1f2937",
-            color: selectedMatch === m.id ? "#fff" : "#9ca3af",
-            border: "none", borderRadius: 8, padding: "6px 10px",
-            fontSize: 11, fontWeight: 600, cursor: "pointer",
-          }}>
-            {m.home.shortName || m.home.name} vs {m.away.shortName || m.away.name}
-          </button>
-        ))}
+      {/* Filtre par match — scroll horizontal sur mobile */}
+      <div style={{ overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8, minWidth: "max-content" }}>
+          <button onClick={() => setSelectedMatch(null)} style={{
+            background: !selectedMatch ? "#d97706" : "#1f2937",
+            color: !selectedMatch ? "#fff" : "#9ca3af",
+            border: "none", borderRadius: 8, padding: "6px 12px",
+            fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap",
+          }}>Tous</button>
+          {relevantMatches.map(m => (
+            <button key={m.id} onClick={() => setSelectedMatch(m.id === selectedMatch ? null : m.id)} style={{
+              background: selectedMatch === m.id ? "#d97706" : "#1f2937",
+              color: selectedMatch === m.id ? "#fff" : "#9ca3af",
+              border: "none", borderRadius: 8, padding: "6px 10px",
+              fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+            }}>
+              {m.home.shortName || m.home.name} vs {m.away.shortName || m.away.name}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Tableau des pronostics */}
+      {/* Matchs */}
       {active.map(m => {
         const matchPronos = participants
           .map(p => ({ participant: p, prono: getProno(p.id, m.id) }))
-          .filter(x => x.prono); // N'affiche que ceux qui ont pronostiqué
+          .filter(x => x.prono);
 
         return (
-          <div key={m.id} style={{ marginBottom: 20 }}>
-            {/* En-tête du match */}
+          <div key={m.id} style={{ marginBottom: 24 }}>
+            {/* En-tête match — responsive */}
             <div style={{
               background: "#111827", border: "1px solid #1f2937",
               borderRadius: 12, padding: "12px 16px", marginBottom: 8,
-              display: "flex", alignItems: "center", justifyContent: "space-between",
             }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {m.home.crest && <img src={m.home.crest} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />}
-                <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 14 }}>
-                  {m.home.shortName || m.home.name}
-                </span>
-                {m.score ? (
-                  <span style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 18, margin: "0 4px" }}>
-                    {m.score.home} – {m.score.away}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {m.home.crest && <img src={m.home.crest} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />}
+                  <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 14 }}>
+                    {m.home.shortName || m.home.name}
                   </span>
-                ) : (
-                  <span style={{ color: "#6b7280", fontSize: 13, margin: "0 4px" }}>vs</span>
-                )}
-                <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 14 }}>
-                  {m.away.shortName || m.away.name}
-                </span>
-                {m.away.crest && <img src={m.away.crest} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />}
+                  {m.score ? (
+                    <span style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 20, margin: "0 4px" }}>
+                      {m.score.home} – {m.score.away}
+                    </span>
+                  ) : (
+                    <span style={{ color: "#6b7280", fontSize: 13, margin: "0 4px" }}>vs</span>
+                  )}
+                  <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 14 }}>
+                    {m.away.shortName || m.away.name}
+                  </span>
+                  {m.away.crest && <img src={m.away.crest} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />}
+                </div>
+                <StatusBadge status={m.status} minute={m.minute} />
               </div>
-              <StatusBadge status={m.status} minute={m.minute} />
+              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>{formatDate(m.kickoff)}</div>
             </div>
 
-            {/* Pronostics des participants */}
+            {/* Pronostics — grille responsive */}
             {matchPronos.length === 0 ? (
               <div style={{ color: "#4b5563", fontSize: 13, padding: "8px 16px", fontStyle: "italic" }}>
                 Aucun pronostic pour ce match
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                gap: 8,
+              }}>
                 {matchPronos.map(({ participant, prono }) => {
-                  const pts = m.status === "finished" && m.score
+                  const pts   = m.status === "finished" && m.score
                     ? computePoints(prono, m.score) : null;
                   const badge = pts !== null ? pointBadge(pts) : null;
-                  const isMe = participant.name === currentUser;
+                  const isMe  = participant.name === currentUser;
 
                   return (
                     <div key={participant.id} style={{
-                      background: isMe ? "rgba(217,119,6,.1)" : "#0d1117",
+                      background: isMe ? "rgba(217,119,6,.12)" : "#0d1117",
                       border: `1px solid ${isMe ? "#d97706" : "#1f2937"}`,
-                      borderRadius: 10, padding: "10px 14px",
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      borderRadius: 10, padding: "12px 14px",
                     }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: isMe ? "#fbbf24" : "#9ca3af", fontWeight: isMe ? 800 : 500 }}>
-                          {isMe ? "👤 " : ""}{participant.name}
-                        </span>
-                        <span style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 18 }}>
-                          {prono.home_score} – {prono.away_score}
-                        </span>
+                      {/* Nom */}
+                      <div style={{ fontSize: 12, color: isMe ? "#fbbf24" : "#9ca3af", fontWeight: isMe ? 800 : 500, marginBottom: 6 }}>
+                        {isMe ? "👤 " : ""}{participant.name}
                       </div>
+                      {/* Score pronostiqué */}
+                      <div style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 22, marginBottom: 6 }}>
+                        {prono.home_score} – {prono.away_score}
+                      </div>
+                      {/* Badge points */}
                       {badge && (
                         <div style={{
+                          display: "inline-block",
                           background: badge.bg, color: badge.color,
-                          padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 700,
+                          padding: "2px 8px", borderRadius: 99, fontSize: 11, fontWeight: 700,
                           border: `1px solid ${badge.color}33`,
                         }}>
-                          +{pts} pts
+                          +{pts} pts · {badge.label}
                         </div>
                       )}
                     </div>
@@ -708,7 +604,6 @@ function GroupStandings({ matches }) {
       {groups.map(group => {
         const groupMatches = matches.filter(m => m.group === group);
         const teams = {};
-
         groupMatches.forEach(m => {
           [m.home, m.away].forEach(team => {
             if (!teams[team.name]) {
@@ -736,27 +631,29 @@ function GroupStandings({ matches }) {
               {group}
             </div>
             <div style={{ background: "#111827", borderRadius: 12, overflow: "hidden", border: "1px solid #1f2937" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 32px 32px 32px 32px 32px 40px", gap: 4, padding: "8px 14px", borderBottom: "1px solid #1f2937" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 28px 28px 28px 28px 36px 36px", gap: 2, padding: "8px 12px", borderBottom: "1px solid #1f2937" }}>
                 {["Équipe","J","G","N","P","DB","Pts"].map(h => (
-                  <div key={h} style={{ fontSize: 11, color: "#4b5563", fontWeight: 700, textAlign: h === "Équipe" ? "left" : "center" }}>{h}</div>
+                  <div key={h} style={{ fontSize: 10, color: "#4b5563", fontWeight: 700, textAlign: h === "Équipe" ? "left" : "center" }}>{h}</div>
                 ))}
               </div>
               {sorted.map((t, i) => (
                 <div key={t.name} style={{
-                  display: "grid", gridTemplateColumns: "1fr 32px 32px 32px 32px 32px 40px",
-                  gap: 4, padding: "10px 14px",
+                  display: "grid", gridTemplateColumns: "1fr 28px 28px 28px 28px 36px 36px",
+                  gap: 2, padding: "10px 12px",
                   background: i < 2 ? "rgba(217,119,6,.08)" : "transparent",
                   borderBottom: i < sorted.length - 1 ? "1px solid #1a1a2e" : "none",
                 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    {i < 2 && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#d97706", display: "inline-block", flexShrink: 0 }} />}
-                    {t.crest && <img src={t.crest} alt="" style={{ width: 20, height: 20, objectFit: "contain" }} />}
-                    <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 13 }}>{t.shortName || t.name}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    {i < 2 && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#d97706", flexShrink: 0 }} />}
+                    {t.crest && <img src={t.crest} alt="" style={{ width: 18, height: 18, objectFit: "contain", flexShrink: 0 }} />}
+                    <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {t.shortName || t.name}
+                    </span>
                   </div>
                   {[t.j, t.g, t.n, t.p].map((v, vi) => (
-                    <div key={vi} style={{ textAlign: "center", fontSize: 13, color: "#9ca3af" }}>{v}</div>
+                    <div key={vi} style={{ textAlign: "center", fontSize: 12, color: "#9ca3af" }}>{v}</div>
                   ))}
-                  <div style={{ textAlign: "center", fontSize: 13, color: "#9ca3af" }}>
+                  <div style={{ textAlign: "center", fontSize: 12, color: "#9ca3af" }}>
                     {t.bp - t.bc > 0 ? `+${t.bp - t.bc}` : t.bp - t.bc}
                   </div>
                   <div style={{ textAlign: "center", fontSize: 13, color: "#fbbf24", fontWeight: 800 }}>{t.pts}</div>
@@ -877,7 +774,7 @@ function Leaderboard({ board }) {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800, color: i === 0 ? "#fbbf24" : "#e5e7eb", fontSize: 16 }}>{p.name}</div>
-            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 3, display: "flex", gap: 10 }}>
+            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
               <span style={{ color: "#22c55e" }}>⚡ {p.exact} exact</span>
               <span style={{ color: "#f59e0b" }}>≈ {p.close} proche</span>
               <span style={{ color: "#60a5fa" }}>↗ {p.trend} tendance</span>
@@ -909,7 +806,7 @@ export default function App() {
 
   const TABS = [
     { key: "matches",     label: "⚽ Matchs" },
-    { key: "pronos",      label: "👁 Pronostics" },
+    { key: "pronos",      label: "👁 Pronos" },
     { key: "groups",      label: "📊 Poules" },
     { key: "bracket",     label: "🏆 Tableau" },
     { key: "leaderboard", label: "🎖 Classement" },
@@ -948,7 +845,7 @@ export default function App() {
             flex: 1, background: "none", border: "none", whiteSpace: "nowrap",
             color: tab === t.key ? "#d97706" : "#6b7280",
             fontWeight: tab === t.key ? 800 : 500,
-            fontSize: 12, padding: "13px 10px", cursor: "pointer",
+            fontSize: 12, padding: "13px 8px", cursor: "pointer",
             borderBottom: tab === t.key ? "2px solid #d97706" : "2px solid transparent",
             transition: "all .2s",
           }}>{t.label}</button>
@@ -957,12 +854,10 @@ export default function App() {
 
       {/* Contenu */}
       <div style={{ maxWidth: 700, margin: "0 auto", padding: "20px 16px" }}>
-
         {tab === "matches" && (
           <>
             {loading && <div style={{ color: "#6b7280", textAlign: "center", padding: 40 }}>Chargement des matchs…</div>}
             {error && <div style={{ color: "#f87171", textAlign: "center", padding: 20, fontSize: 14 }}>Erreur : {error}</div>}
-            {/* Affiche tous les statuts y compris les passés */}
             {["live", "upcoming", "finished"].map(status => {
               const group = matches.filter(m => m.status === status);
               if (!group.length) return null;
@@ -985,7 +880,7 @@ export default function App() {
         {tab === "pronos" && (
           <>
             <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 4 }}>👁 Pronostics de tous</h2>
-            <p style={{ color: "#6b7280", fontSize: 13, marginBottom: 16 }}>Lecture seule — les pronostics des matchs à venir sont visibles après le coup d'envoi.</p>
+            <p style={{ color: "#6b7280", fontSize: 13, marginBottom: 16 }}>Lecture seule — les pronostics à venir sont visibles après le coup d'envoi.</p>
             <AllPronostics matches={matches} currentUser={participant.name} />
           </>
         )}

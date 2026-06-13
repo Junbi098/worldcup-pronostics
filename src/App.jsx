@@ -1,17 +1,24 @@
 // src/App.jsx
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./supabaseClient";
 import { computePoints, pointBadge } from "./points";
 
-// ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const POLL_INTERVAL_MS = 60_000; // rafraîchit les matchs toutes les 60s
-const POLL_LIVE_MS     = 30_000; // toutes les 30s si match en direct
+const POLL_INTERVAL_MS = 60_000;
+const POLL_LIVE_MS     = 30_000;
 
 // ─── UTILITAIRES ─────────────────────────────────────────────────────────────
+
+// Fuseau horaire local de l'utilisateur (automatique)
 function formatDate(iso) {
-  return new Date(iso).toLocaleString("fr-FR", {
+  return new Date(iso).toLocaleString(undefined, {
     weekday: "short", day: "numeric", month: "short",
-    hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function formatTime(iso) {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "2-digit", minute: "2-digit",
   });
 }
 
@@ -26,11 +33,29 @@ function timeUntil(iso) {
   return `dans ${s}s`;
 }
 
+// Détermine si un stage est une phase de groupes
+function isGroupStage(stage) {
+  return !stage || stage === "GROUP_STAGE" || stage.startsWith("Groupe") || stage.startsWith("Group");
+}
+
+// Label lisible pour les phases finales
+function stageLabel(stage) {
+  const map = {
+    "ROUND_OF_16": "16èmes de finale",
+    "QUARTER_FINALS": "Quarts de finale",
+    "SEMI_FINALS": "Demi-finales",
+    "THIRD_PLACE": "Petite finale",
+    "FINAL": "Finale",
+  };
+  return map[stage] || stage;
+}
+
 // ─── HOOKS ───────────────────────────────────────────────────────────────────
+
 function useMatches() {
-  const [matches, setMatches] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState(null);
+  const [matches, setMatches]   = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState(null);
 
   const fetchMatches = useCallback(async () => {
     try {
@@ -46,11 +71,8 @@ function useMatches() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchMatches();
-  }, [fetchMatches]);
+  useEffect(() => { fetchMatches(); }, [fetchMatches]);
 
-  // Polling adaptatif
   useEffect(() => {
     const hasLive = matches.some((m) => m.status === "live");
     const interval = hasLive ? POLL_LIVE_MS : POLL_INTERVAL_MS;
@@ -62,7 +84,7 @@ function useMatches() {
 }
 
 function usePronostics(participantId) {
-  const [pronostics, setPronostics] = useState({}); // { matchId: {home_score, away_score} }
+  const [pronostics, setPronostics] = useState({});
 
   const loadPronostics = useCallback(async () => {
     if (!participantId) return;
@@ -80,7 +102,7 @@ function usePronostics(participantId) {
   useEffect(() => { loadPronostics(); }, [loadPronostics]);
 
   const savePronostic = useCallback(async (matchId, homeScore, awayScore) => {
-    if (!participantId) return;
+    if (!participantId) return false;
     const { error } = await supabase.from("pronostics").upsert(
       { participant_id: participantId, match_id: matchId, home_score: homeScore, away_score: awayScore },
       { onConflict: "participant_id,match_id" }
@@ -135,10 +157,10 @@ function useLeaderboard(matches) {
 // ─── COMPOSANTS ──────────────────────────────────────────────────────────────
 
 function LoginScreen({ onLogin }) {
-  const [name, setName]     = useState("");
+  const [name, setName]       = useState("");
   const [loading, setLoading] = useState(false);
   const [existing, setExisting] = useState([]);
-  const [err, setErr]       = useState("");
+  const [err, setErr]         = useState("");
 
   useEffect(() => {
     supabase.from("participants").select("name").order("name").then(({ data }) => {
@@ -150,7 +172,6 @@ function LoginScreen({ onLogin }) {
     const trimmed = (inputName || name).trim();
     if (!trimmed) return;
     setLoading(true); setErr("");
-    // Upsert participant
     const { data, error } = await supabase
       .from("participants")
       .upsert({ name: trimmed }, { onConflict: "name" })
@@ -168,8 +189,17 @@ function LoginScreen({ onLogin }) {
       fontFamily: "'Segoe UI', system-ui, sans-serif", padding: 24,
     }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
-      <div style={{ fontSize: 60, marginBottom: 8 }}>⚽</div>
-      <h1 style={{ fontWeight: 900, fontSize: 30, color: "#f9fafb", letterSpacing: -1, margin: "0 0 4px", textAlign: "center" }}>
+
+      {/* Logo Moses Consulting */}
+      <div style={{ marginBottom: 8, textAlign: "center" }}>
+        <div style={{ fontSize: 13, color: "#d97706", fontWeight: 800, letterSpacing: 3, textTransform: "uppercase" }}>
+          Moses Consulting
+        </div>
+        <div style={{ width: 40, height: 2, background: "#d97706", margin: "6px auto" }} />
+      </div>
+
+      <div style={{ fontSize: 56, marginBottom: 8 }}>⚽</div>
+      <h1 style={{ fontWeight: 900, fontSize: 28, color: "#f9fafb", letterSpacing: -1, margin: "0 0 4px", textAlign: "center" }}>
         Pronostics
       </h1>
       <div style={{ color: "#d97706", fontWeight: 700, fontSize: 13, letterSpacing: 3, marginBottom: 36, textTransform: "uppercase" }}>
@@ -177,9 +207,7 @@ function LoginScreen({ onLogin }) {
       </div>
 
       <div style={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 16, padding: 28, width: "100%", maxWidth: 380 }}>
-        <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 8 }}>
-          Ton prénom pour jouer
-        </label>
+        <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 8 }}>Ton prénom pour jouer</label>
         <input
           value={name} onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleLogin()}
@@ -243,25 +271,23 @@ function StatusBadge({ status, minute }) {
 
 function MatchCard({ match, pronostic, onSave }) {
   const locked = match.status === "live" || match.status === "finished";
-  const [h, setH] = useState(pronostic?.home_score ?? "");
-  const [a, setA] = useState(pronostic?.away_score ?? "");
+  const [h, setH]     = useState(pronostic?.home_score ?? "");
+  const [a, setA]     = useState(pronostic?.away_score ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved]   = useState(false);
   const [tick, setTick]     = useState(0);
 
-  // Compte à rebours
   useEffect(() => {
     if (match.status !== "upcoming") return;
     const iv = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(iv);
   }, [match.status]);
 
-  // Synchro pronostic depuis parent
   useEffect(() => {
     if (pronostic) { setH(pronostic.home_score); setA(pronostic.away_score); }
   }, [pronostic]);
 
-  const pts = match.status === "finished" && pronostic && match.score
+  const pts   = match.status === "finished" && pronostic && match.score
     ? computePoints(pronostic, match.score) : null;
   const badge = pts !== null ? pointBadge(pts) : null;
 
@@ -282,15 +308,13 @@ function MatchCard({ match, pronostic, onSave }) {
       borderRadius: 14, padding: "18px 20px", marginBottom: 12,
       boxShadow: match.status === "live" ? "0 0 18px rgba(248,113,113,.12)" : "none",
     }}>
-      {/* En-tête */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <span style={{ fontSize: 11, color: "#4b5563", textTransform: "uppercase", letterSpacing: 1 }}>
-          {match.group}
+          {isGroupStage(match.stage) ? match.group : stageLabel(match.stage)}
         </span>
         <StatusBadge status={match.status} minute={match.minute} />
       </div>
 
-      {/* Équipes + score */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <div style={{ flex: 1, textAlign: "right" }}>
           {match.home.crest
@@ -304,9 +328,7 @@ function MatchCard({ match, pronostic, onSave }) {
         <div style={{ textAlign: "center", minWidth: 88 }}>
           {match.status === "upcoming" ? (
             <>
-              <div style={{ fontSize: 13, color: "#6b7280" }}>
-                {new Date(match.kickoff).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" })}
-              </div>
+              <div style={{ fontSize: 13, color: "#6b7280" }}>{formatTime(match.kickoff)}</div>
               {timeUntil(match.kickoff) && (
                 <div style={{ fontSize: 11, color: "#d97706", fontWeight: 600, marginTop: 2 }}>
                   {timeUntil(match.kickoff)}
@@ -330,14 +352,12 @@ function MatchCard({ match, pronostic, onSave }) {
         </div>
       </div>
 
-      {/* Date si à venir */}
       {match.status === "upcoming" && (
         <div style={{ textAlign: "center", fontSize: 11, color: "#6b7280", marginTop: 6 }}>
           {formatDate(match.kickoff)}
         </div>
       )}
 
-      {/* Zone pronostic */}
       <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #1f2937", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         {locked ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -368,7 +388,6 @@ function MatchCard({ match, pronostic, onSave }) {
               color: canSave ? "#fff" : "#6b7280",
               border: "none", borderRadius: 6, padding: "5px 12px",
               fontSize: 12, fontWeight: 700, cursor: canSave ? "pointer" : "not-allowed",
-              transition: "background .2s",
             }}>
               {saving ? "…" : saved ? "✓ Sauvegardé" : "✓ Valider"}
             </button>
@@ -388,6 +407,179 @@ function MatchCard({ match, pronostic, onSave }) {
   );
 }
 
+// ─── CLASSEMENT PAR POULE ────────────────────────────────────────────────────
+function GroupStandings({ matches }) {
+  // Récupère les poules uniques
+  const groups = [...new Set(
+    matches.filter(m => isGroupStage(m.stage) && m.group).map(m => m.group)
+  )].sort();
+
+  if (!groups.length) return (
+    <div style={{ color: "#4b5563", textAlign: "center", padding: 40, fontSize: 14 }}>
+      Les poules apparaîtront au début de la compétition
+    </div>
+  );
+
+  return (
+    <div>
+      {groups.map(group => {
+        const groupMatches = matches.filter(m => m.group === group && m.status === "finished");
+        // Calcule les stats par équipe
+        const teams = {};
+        groupMatches.forEach(m => {
+          [m.home, m.away].forEach(t => {
+            if (!teams[t.name]) teams[t.name] = { name: t.name, crest: t.crest, shortName: t.shortName, j: 0, g: 0, n: 0, p: 0, bp: 0, bc: 0, pts: 0 };
+          });
+          if (!m.score) return;
+          const { home: sh, away: sa } = m.score;
+          const hn = m.home.name, an = m.away.name;
+          teams[hn].j++; teams[an].j++;
+          teams[hn].bp += sh; teams[hn].bc += sa;
+          teams[an].bp += sa; teams[an].bc += sh;
+          if (sh > sa)      { teams[hn].g++; teams[hn].pts += 3; teams[an].p++; }
+          else if (sh < sa) { teams[an].g++; teams[an].pts += 3; teams[hn].p++; }
+          else              { teams[hn].n++; teams[hn].pts++; teams[an].n++; teams[an].pts++; }
+        });
+
+        const sorted = Object.values(teams).sort((a, b) =>
+          b.pts - a.pts || (b.bp - b.bc) - (a.bp - a.bc) || b.bp - a.bp
+        );
+
+        return (
+          <div key={group} style={{ marginBottom: 24 }}>
+            <div style={{ color: "#d97706", fontWeight: 800, fontSize: 13, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>
+              {group}
+            </div>
+            <div style={{ background: "#111827", borderRadius: 12, overflow: "hidden", border: "1px solid #1f2937" }}>
+              {/* En-tête tableau */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 32px 32px 32px 32px 32px 40px", gap: 4, padding: "8px 14px", borderBottom: "1px solid #1f2937" }}>
+                {["Équipe", "J", "G", "N", "P", "DB", "Pts"].map(h => (
+                  <div key={h} style={{ fontSize: 11, color: "#4b5563", fontWeight: 700, textAlign: h === "Équipe" ? "left" : "center" }}>{h}</div>
+                ))}
+              </div>
+              {sorted.length === 0 ? (
+                <div style={{ color: "#4b5563", fontSize: 13, padding: "14px", fontStyle: "italic" }}>Aucun match terminé</div>
+              ) : sorted.map((t, i) => (
+                <div key={t.name} style={{
+                  display: "grid", gridTemplateColumns: "1fr 32px 32px 32px 32px 32px 40px",
+                  gap: 4, padding: "10px 14px",
+                  background: i < 2 ? "rgba(217,119,6,.08)" : "transparent",
+                  borderBottom: i < sorted.length - 1 ? "1px solid #1a1a2e" : "none",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {i < 2 && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#d97706", display: "inline-block", flexShrink: 0 }} />}
+                    {t.crest && <img src={t.crest} alt="" style={{ width: 20, height: 20, objectFit: "contain" }} />}
+                    <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 13 }}>{t.shortName || t.name}</span>
+                  </div>
+                  {[t.j, t.g, t.n, t.p, t.bp - t.bc, t.pts].map((v, vi) => (
+                    <div key={vi} style={{ textAlign: "center", fontSize: 13, color: vi === 5 ? "#fbbf24" : "#9ca3af", fontWeight: vi === 5 ? 800 : 400 }}>
+                      {v > 0 && vi === 4 ? `+${v}` : v}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11, color: "#4b5563", marginTop: 8 }}>
+        🟠 = qualifiés pour les 16èmes · DB = différence de buts
+      </div>
+    </div>
+  );
+}
+
+// ─── BRACKET PHASES FINALES ──────────────────────────────────────────────────
+const KNOCKOUT_ORDER = ["ROUND_OF_16", "QUARTER_FINALS", "SEMI_FINALS", "THIRD_PLACE", "FINAL"];
+
+function BracketMatch({ match }) {
+  const finished = match?.status === "finished";
+  const live     = match?.status === "live";
+
+  if (!match) return (
+    <div style={{
+      background: "#0d1117", border: "1px dashed #1f2937",
+      borderRadius: 10, padding: "10px 12px", minWidth: 180,
+    }}>
+      <div style={{ color: "#374151", fontSize: 12, fontStyle: "italic" }}>À déterminer</div>
+    </div>
+  );
+
+  return (
+    <div style={{
+      background: "linear-gradient(135deg,#111827,#1a1f2e)",
+      border: `1px solid ${live ? "#7f1d1d" : finished ? "#1f2937" : "#374151"}`,
+      borderRadius: 10, padding: "10px 12px", minWidth: 200,
+      boxShadow: live ? "0 0 12px rgba(248,113,113,.15)" : "none",
+    }}>
+      {[{ team: match.home, score: match.score?.home }, { team: match.away, score: match.score?.away }].map((row, i) => {
+        const winner = finished && match.score && (
+          (i === 0 && match.score.home > match.score.away) ||
+          (i === 1 && match.score.away > match.score.home)
+        );
+        return (
+          <div key={i} style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "4px 0", borderBottom: i === 0 ? "1px solid #1f2937" : "none",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {row.team.crest && <img src={row.team.crest} alt="" style={{ width: 18, height: 18, objectFit: "contain" }} />}
+              <span style={{ fontSize: 12, fontWeight: winner ? 800 : 500, color: winner ? "#fbbf24" : "#e5e7eb" }}>
+                {row.team.shortName || row.team.name}
+              </span>
+            </div>
+            <span style={{ fontSize: 14, fontWeight: 800, color: winner ? "#fbbf24" : "#6b7280", fontFamily: "monospace", marginLeft: 10 }}>
+              {row.score ?? (live ? "–" : "")}
+            </span>
+          </div>
+        );
+      })}
+      {live && (
+        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f87171", animation: "pulse 1s infinite" }} />
+          <span style={{ fontSize: 10, color: "#f87171", fontWeight: 700 }}>LIVE {match.minute}'</span>
+        </div>
+      )}
+      {!live && !finished && (
+        <div style={{ marginTop: 4, fontSize: 10, color: "#6b7280" }}>{formatDate(match.kickoff)}</div>
+      )}
+    </div>
+  );
+}
+
+function Bracket({ matches }) {
+  const knockout = matches.filter(m => !isGroupStage(m.stage));
+
+  if (!knockout.length) return (
+    <div style={{ color: "#4b5563", textAlign: "center", padding: 40, fontSize: 14 }}>
+      Le tableau apparaîtra à partir des 16èmes de finale
+    </div>
+  );
+
+  const byStage = {};
+  KNOCKOUT_ORDER.forEach(s => { byStage[s] = knockout.filter(m => m.stage === s); });
+
+  const stages = KNOCKOUT_ORDER.filter(s => byStage[s]?.length > 0);
+
+  return (
+    <div style={{ overflowX: "auto", paddingBottom: 16 }}>
+      <div style={{ display: "flex", gap: 24, minWidth: "max-content" }}>
+        {stages.map(stage => (
+          <div key={stage} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ color: "#d97706", fontWeight: 800, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4, textAlign: "center" }}>
+              {stageLabel(stage)}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, justifyContent: "center", flex: 1 }}>
+              {byStage[stage].map(m => <BracketMatch key={m.id} match={m} />)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── CLASSEMENT GÉNÉRAL ──────────────────────────────────────────────────────
 function Leaderboard({ board }) {
   const medals = ["🥇", "🥈", "🥉"];
   if (!board.length) return (
@@ -397,7 +589,6 @@ function Leaderboard({ board }) {
   );
   return (
     <div>
-      <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>🏆 Classement</h2>
       {board.map((p, i) => (
         <div key={p.name} style={{
           background: i === 0 ? "linear-gradient(135deg,#1c1400,#2d2000)" : "#111827",
@@ -440,6 +631,13 @@ export default function App() {
 
   if (!participant) return <LoginScreen onLogin={setParticipant} />;
 
+  const TABS = [
+    { key: "matches",     label: "⚽ Matchs" },
+    { key: "groups",      label: "📊 Poules" },
+    { key: "bracket",     label: "🏆 Tableau" },
+    { key: "leaderboard", label: "🎖 Classement" },
+  ];
+
   return (
     <div style={{ minHeight: "100vh", background: "#030712", fontFamily: "'Segoe UI',system-ui,sans-serif", color: "#f9fafb" }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}} input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none} *{box-sizing:border-box}`}</style>
@@ -447,17 +645,17 @@ export default function App() {
       {/* Header */}
       <div style={{
         background: "#030712", borderBottom: "1px solid #111827",
-        padding: "14px 20px", position: "sticky", top: 0, zIndex: 10,
+        padding: "12px 20px", position: "sticky", top: 0, zIndex: 10,
         display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 22 }}>⚽</span>
-          <div>
-            <div style={{ fontWeight: 900, fontSize: 16, letterSpacing: -0.5 }}>Pronostics CDM 2026</div>
-            <div style={{ fontSize: 11, color: "#6b7280" }}>
-              {liveCount > 0 && <span style={{ color: "#f87171" }}>● {liveCount} en direct · </span>}
-              {finishedCount} terminé{finishedCount > 1 ? "s" : ""}
-            </div>
+        <div>
+          <div style={{ fontSize: 10, color: "#d97706", fontWeight: 800, letterSpacing: 2, textTransform: "uppercase" }}>
+            Moses Consulting
+          </div>
+          <div style={{ fontWeight: 900, fontSize: 15, letterSpacing: -0.5 }}>Pronostics CDM 2026</div>
+          <div style={{ fontSize: 11, color: "#6b7280" }}>
+            {liveCount > 0 && <span style={{ color: "#f87171" }}>● {liveCount} en direct · </span>}
+            {finishedCount} terminé{finishedCount > 1 ? "s" : ""}
           </div>
         </div>
         <button onClick={() => setParticipant(null)} style={{
@@ -469,13 +667,13 @@ export default function App() {
       </div>
 
       {/* Navigation */}
-      <div style={{ display: "flex", borderBottom: "1px solid #111827", background: "#030712" }}>
-        {[{ key: "matches", label: "⚽ Matchs" }, { key: "leaderboard", label: "🏆 Classement" }].map((t) => (
+      <div style={{ display: "flex", borderBottom: "1px solid #111827", background: "#030712", overflowX: "auto" }}>
+        {TABS.map((t) => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
-            flex: 1, background: "none", border: "none",
+            flex: 1, background: "none", border: "none", whiteSpace: "nowrap",
             color: tab === t.key ? "#d97706" : "#6b7280",
             fontWeight: tab === t.key ? 800 : 500,
-            fontSize: 14, padding: "14px 0", cursor: "pointer",
+            fontSize: 13, padding: "13px 12px", cursor: "pointer",
             borderBottom: tab === t.key ? "2px solid #d97706" : "2px solid transparent",
             transition: "all .2s",
           }}>{t.label}</button>
@@ -483,12 +681,12 @@ export default function App() {
       </div>
 
       {/* Contenu */}
-      <div style={{ maxWidth: 640, margin: "0 auto", padding: "20px 16px" }}>
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: "20px 16px" }}>
+
         {tab === "matches" && (
           <>
             {loading && <div style={{ color: "#6b7280", textAlign: "center", padding: 40 }}>Chargement des matchs…</div>}
             {error && <div style={{ color: "#f87171", textAlign: "center", padding: 20, fontSize: 14 }}>Erreur : {error}</div>}
-
             {["live", "upcoming", "finished"].map((status) => {
               const group = matches.filter((m) => m.status === status);
               if (!group.length) return null;
@@ -507,7 +705,27 @@ export default function App() {
             })}
           </>
         )}
-        {tab === "leaderboard" && <Leaderboard board={board} />}
+
+        {tab === "groups" && (
+          <>
+            <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>📊 Classements par poule</h2>
+            <GroupStandings matches={matches} />
+          </>
+        )}
+
+        {tab === "bracket" && (
+          <>
+            <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>🏆 Tableau des phases finales</h2>
+            <Bracket matches={matches} />
+          </>
+        )}
+
+        {tab === "leaderboard" && (
+          <>
+            <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>🎖 Classement général</h2>
+            <Leaderboard board={board} />
+          </>
+        )}
       </div>
 
       {/* Légende */}
@@ -515,8 +733,12 @@ export default function App() {
         background: "#0a0f1a", borderTop: "1px solid #111827",
         padding: "12px 20px", display: "flex", justifyContent: "center", gap: 20, flexWrap: "wrap",
       }}>
-        {[{ pts: 5, label: "Score exact", color: "#22c55e" }, { pts: 3, label: "±1 but", color: "#f59e0b" },
-          { pts: 1, label: "Bonne tendance", color: "#60a5fa" }, { pts: 0, label: "Raté", color: "#4b5563" }].map((r) => (
+        {[
+          { pts: 5, label: "Score exact", color: "#22c55e" },
+          { pts: 3, label: "±1 but", color: "#f59e0b" },
+          { pts: 1, label: "Bonne tendance", color: "#60a5fa" },
+          { pts: 0, label: "Raté", color: "#4b5563" },
+        ].map((r) => (
           <div key={r.pts} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             <span style={{ fontWeight: 800, color: r.color }}>{r.pts} pts</span>
             <span style={{ color: "#6b7280" }}>{r.label}</span>

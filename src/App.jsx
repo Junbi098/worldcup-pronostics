@@ -8,7 +8,6 @@ const POLL_LIVE_MS     = 30_000;
 
 // ─── UTILITAIRES ─────────────────────────────────────────────────────────────
 
-// Fuseau horaire local de l'utilisateur (automatique)
 function formatDate(iso) {
   return new Date(iso).toLocaleString(undefined, {
     weekday: "short", day: "numeric", month: "short",
@@ -33,19 +32,17 @@ function timeUntil(iso) {
   return `dans ${s}s`;
 }
 
-// Détermine si un stage est une phase de groupes
 function isGroupStage(stage) {
   return !stage || stage === "GROUP_STAGE" || stage.startsWith("Groupe") || stage.startsWith("Group");
 }
 
-// Label lisible pour les phases finales
 function stageLabel(stage) {
   const map = {
-    "ROUND_OF_16": "16èmes de finale",
-    "QUARTER_FINALS": "Quarts de finale",
-    "SEMI_FINALS": "Demi-finales",
-    "THIRD_PLACE": "Petite finale",
-    "FINAL": "Finale",
+    "ROUND_OF_16":   "16èmes de finale",
+    "QUARTER_FINALS":"Quarts de finale",
+    "SEMI_FINALS":   "Demi-finales",
+    "THIRD_PLACE":   "Petite finale",
+    "FINAL":         "Finale",
   };
   return map[stage] || stage;
 }
@@ -53,9 +50,9 @@ function stageLabel(stage) {
 // ─── HOOKS ───────────────────────────────────────────────────────────────────
 
 function useMatches() {
-  const [matches, setMatches]   = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState(null);
+  const [matches, setMatches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState(null);
 
   const fetchMatches = useCallback(async () => {
     try {
@@ -75,12 +72,11 @@ function useMatches() {
 
   useEffect(() => {
     const hasLive = matches.some((m) => m.status === "live");
-    const interval = hasLive ? POLL_LIVE_MS : POLL_INTERVAL_MS;
-    const timer = setInterval(fetchMatches, interval);
+    const timer = setInterval(fetchMatches, hasLive ? POLL_LIVE_MS : POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [matches, fetchMatches]);
 
-  return { matches, loading, error, refetch: fetchMatches };
+  return { matches, loading, error };
 }
 
 function usePronostics(participantId) {
@@ -122,15 +118,12 @@ function useLeaderboard(matches) {
   const refresh = useCallback(async () => {
     const finished = matches.filter((m) => m.status === "finished");
     if (!finished.length) { setBoard([]); return; }
-
     const { data: participants } = await supabase.from("participants").select("id, name");
     const { data: allPronostics } = await supabase
       .from("pronostics")
       .select("participant_id, match_id, home_score, away_score")
       .in("match_id", finished.map((m) => m.id));
-
     if (!participants || !allPronostics) return;
-
     const scores = participants.map((p) => {
       const myProno = allPronostics.filter((x) => x.participant_id === p.id);
       let total = 0, exact = 0, close = 0, trend = 0;
@@ -145,22 +138,20 @@ function useLeaderboard(matches) {
       });
       return { name: p.name, total, exact, close, trend };
     });
-
     setBoard(scores.sort((a, b) => b.total - a.total || b.exact - a.exact || b.close - a.close));
   }, [matches]);
 
   useEffect(() => { refresh(); }, [refresh]);
-
   return board;
 }
 
-// ─── COMPOSANTS ──────────────────────────────────────────────────────────────
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
 
 function LoginScreen({ onLogin }) {
-  const [name, setName]       = useState("");
-  const [loading, setLoading] = useState(false);
+  const [name, setName]         = useState("");
+  const [loading, setLoading]   = useState(false);
   const [existing, setExisting] = useState([]);
-  const [err, setErr]         = useState("");
+  const [err, setErr]           = useState("");
 
   useEffect(() => {
     supabase.from("participants").select("name").order("name").then(({ data }) => {
@@ -172,12 +163,31 @@ function LoginScreen({ onLogin }) {
     const trimmed = (inputName || name).trim();
     if (!trimmed) return;
     setLoading(true); setErr("");
-    const { data, error } = await supabase
+
+    // 1. Cherche si le participant existe déjà
+    let { data, error } = await supabase
       .from("participants")
-      .upsert({ name: trimmed }, { onConflict: "name" })
       .select("id, name")
-      .single();
-    if (error || !data) { setErr("Erreur de connexion, réessaie."); setLoading(false); return; }
+      .eq("name", trimmed)
+      .maybeSingle(); // ne plante pas si absent
+
+    // 2. Si absent, on le crée
+    if (!data && !error) {
+      const insert = await supabase
+        .from("participants")
+        .insert({ name: trimmed })
+        .select("id, name")
+        .single();
+      data  = insert.data;
+      error = insert.error;
+    }
+
+    if (error || !data) {
+      setErr("Erreur de connexion, réessaie.");
+      setLoading(false);
+      return;
+    }
+
     onLogin(data);
     setLoading(false);
   };
@@ -189,15 +199,12 @@ function LoginScreen({ onLogin }) {
       fontFamily: "'Segoe UI', system-ui, sans-serif", padding: 24,
     }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
-
-      {/* Logo Moses Consulting */}
       <div style={{ marginBottom: 8, textAlign: "center" }}>
         <div style={{ fontSize: 13, color: "#d97706", fontWeight: 800, letterSpacing: 3, textTransform: "uppercase" }}>
           Moses Consulting
         </div>
         <div style={{ width: 40, height: 2, background: "#d97706", margin: "6px auto" }} />
       </div>
-
       <div style={{ fontSize: 56, marginBottom: 8 }}>⚽</div>
       <h1 style={{ fontWeight: 900, fontSize: 28, color: "#f9fafb", letterSpacing: -1, margin: "0 0 4px", textAlign: "center" }}>
         Pronostics
@@ -219,7 +226,7 @@ function LoginScreen({ onLogin }) {
             padding: "12px 14px", outline: "none", boxSizing: "border-box", marginBottom: 4,
           }}
         />
-        {err && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 8 }}>{err}</div>}
+        {err && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 4 }}>{err}</div>}
         <button onClick={() => handleLogin()} disabled={loading || !name.trim()} style={{
           width: "100%", background: name.trim() ? "#d97706" : "#374151",
           color: "#fff", border: "none", borderRadius: 10,
@@ -247,6 +254,8 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ─── MATCH CARD ───────────────────────────────────────────────────────────────
+
 function StatusBadge({ status, minute }) {
   if (status === "live") return (
     <span style={{
@@ -271,11 +280,11 @@ function StatusBadge({ status, minute }) {
 
 function MatchCard({ match, pronostic, onSave }) {
   const locked = match.status === "live" || match.status === "finished";
-  const [h, setH]     = useState(pronostic?.home_score ?? "");
-  const [a, setA]     = useState(pronostic?.away_score ?? "");
+  const [h, setH]           = useState(pronostic?.home_score ?? "");
+  const [a, setA]           = useState(pronostic?.away_score ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved]   = useState(false);
-  const [tick, setTick]     = useState(0);
+  const [, setTick]         = useState(0);
 
   useEffect(() => {
     if (match.status !== "upcoming") return;
@@ -326,7 +335,12 @@ function MatchCard({ match, pronostic, onSave }) {
         </div>
 
         <div style={{ textAlign: "center", minWidth: 88 }}>
-          {match.status === "upcoming" ? (
+          {/* Toujours afficher le score si disponible, même pour les matchs terminés */}
+          {match.score ? (
+            <div style={{ fontSize: 34, fontWeight: 900, color: "#f9fafb", letterSpacing: 2, fontFamily: "monospace" }}>
+              {match.score.home}<span style={{ color: "#374151" }}> – </span>{match.score.away}
+            </div>
+          ) : (
             <>
               <div style={{ fontSize: 13, color: "#6b7280" }}>{formatTime(match.kickoff)}</div>
               {timeUntil(match.kickoff) && (
@@ -335,10 +349,6 @@ function MatchCard({ match, pronostic, onSave }) {
                 </div>
               )}
             </>
-          ) : (
-            <div style={{ fontSize: 34, fontWeight: 900, color: "#f9fafb", letterSpacing: 2, fontFamily: "monospace" }}>
-              {match.score?.home ?? "–"}<span style={{ color: "#374151" }}> – </span>{match.score?.away ?? "–"}
-            </div>
           )}
         </div>
 
@@ -352,12 +362,11 @@ function MatchCard({ match, pronostic, onSave }) {
         </div>
       </div>
 
-      {match.status === "upcoming" && (
-        <div style={{ textAlign: "center", fontSize: 11, color: "#6b7280", marginTop: 6 }}>
-          {formatDate(match.kickoff)}
-        </div>
-      )}
+      <div style={{ textAlign: "center", fontSize: 11, color: "#6b7280", marginTop: 6 }}>
+        {formatDate(match.kickoff)}
+      </div>
 
+      {/* Zone pronostic */}
       <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #1f2937", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         {locked ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -408,8 +417,8 @@ function MatchCard({ match, pronostic, onSave }) {
 }
 
 // ─── CLASSEMENT PAR POULE ────────────────────────────────────────────────────
+
 function GroupStandings({ matches }) {
-  // Récupère les poules uniques
   const groups = [...new Set(
     matches.filter(m => isGroupStage(m.stage) && m.group).map(m => m.group)
   )].sort();
@@ -423,14 +432,25 @@ function GroupStandings({ matches }) {
   return (
     <div>
       {groups.map(group => {
-        const groupMatches = matches.filter(m => m.group === group && m.status === "finished");
-        // Calcule les stats par équipe
+        const groupMatches = matches.filter(m => m.group === group);
+
+        // Collecte TOUTES les équipes du groupe, même sans match joué
         const teams = {};
         groupMatches.forEach(m => {
-          [m.home, m.away].forEach(t => {
-            if (!teams[t.name]) teams[t.name] = { name: t.name, crest: t.crest, shortName: t.shortName, j: 0, g: 0, n: 0, p: 0, bp: 0, bc: 0, pts: 0 };
+          [
+            { team: m.home, opponent: m.away, isHome: true, score: m.score, status: m.status },
+            { team: m.away, opponent: m.home, isHome: false, score: m.score, status: m.status },
+          ].forEach(({ team }) => {
+            if (!teams[team.name]) {
+              teams[team.name] = {
+                name: team.name, crest: team.crest, shortName: team.shortName,
+                j: 0, g: 0, n: 0, p: 0, bp: 0, bc: 0, pts: 0,
+              };
+            }
           });
-          if (!m.score) return;
+
+          // Calcule stats uniquement pour les matchs terminés
+          if (m.status !== "finished" || !m.score) return;
           const { home: sh, away: sa } = m.score;
           const hn = m.home.name, an = m.away.name;
           teams[hn].j++; teams[an].j++;
@@ -451,15 +471,13 @@ function GroupStandings({ matches }) {
               {group}
             </div>
             <div style={{ background: "#111827", borderRadius: 12, overflow: "hidden", border: "1px solid #1f2937" }}>
-              {/* En-tête tableau */}
+              {/* En-tête */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 32px 32px 32px 32px 32px 40px", gap: 4, padding: "8px 14px", borderBottom: "1px solid #1f2937" }}>
                 {["Équipe", "J", "G", "N", "P", "DB", "Pts"].map(h => (
                   <div key={h} style={{ fontSize: 11, color: "#4b5563", fontWeight: 700, textAlign: h === "Équipe" ? "left" : "center" }}>{h}</div>
                 ))}
               </div>
-              {sorted.length === 0 ? (
-                <div style={{ color: "#4b5563", fontSize: 13, padding: "14px", fontStyle: "italic" }}>Aucun match terminé</div>
-              ) : sorted.map((t, i) => (
+              {sorted.map((t, i) => (
                 <div key={t.name} style={{
                   display: "grid", gridTemplateColumns: "1fr 32px 32px 32px 32px 32px 40px",
                   gap: 4, padding: "10px 14px",
@@ -471,11 +489,13 @@ function GroupStandings({ matches }) {
                     {t.crest && <img src={t.crest} alt="" style={{ width: 20, height: 20, objectFit: "contain" }} />}
                     <span style={{ fontWeight: 700, color: "#e5e7eb", fontSize: 13 }}>{t.shortName || t.name}</span>
                   </div>
-                  {[t.j, t.g, t.n, t.p, t.bp - t.bc, t.pts].map((v, vi) => (
-                    <div key={vi} style={{ textAlign: "center", fontSize: 13, color: vi === 5 ? "#fbbf24" : "#9ca3af", fontWeight: vi === 5 ? 800 : 400 }}>
-                      {v > 0 && vi === 4 ? `+${v}` : v}
-                    </div>
+                  {[t.j, t.g, t.n, t.p].map((v, vi) => (
+                    <div key={vi} style={{ textAlign: "center", fontSize: 13, color: "#9ca3af" }}>{v}</div>
                   ))}
+                  <div style={{ textAlign: "center", fontSize: 13, color: "#9ca3af" }}>
+                    {t.bp - t.bc > 0 ? `+${t.bp - t.bc}` : t.bp - t.bc}
+                  </div>
+                  <div style={{ textAlign: "center", fontSize: 13, color: "#fbbf24", fontWeight: 800 }}>{t.pts}</div>
                 </div>
               ))}
             </div>
@@ -489,26 +509,27 @@ function GroupStandings({ matches }) {
   );
 }
 
-// ─── BRACKET PHASES FINALES ──────────────────────────────────────────────────
+// ─── BRACKET ─────────────────────────────────────────────────────────────────
+
 const KNOCKOUT_ORDER = ["ROUND_OF_16", "QUARTER_FINALS", "SEMI_FINALS", "THIRD_PLACE", "FINAL"];
 
 function BracketMatch({ match }) {
-  const finished = match?.status === "finished";
-  const live     = match?.status === "live";
-
   if (!match) return (
     <div style={{
       background: "#0d1117", border: "1px dashed #1f2937",
-      borderRadius: 10, padding: "10px 12px", minWidth: 180,
+      borderRadius: 10, padding: "10px 12px", minWidth: 190,
     }}>
       <div style={{ color: "#374151", fontSize: 12, fontStyle: "italic" }}>À déterminer</div>
     </div>
   );
 
+  const finished = match.status === "finished";
+  const live     = match.status === "live";
+
   return (
     <div style={{
       background: "linear-gradient(135deg,#111827,#1a1f2e)",
-      border: `1px solid ${live ? "#7f1d1d" : finished ? "#1f2937" : "#374151"}`,
+      border: `1px solid ${live ? "#7f1d1d" : "#374151"}`,
       borderRadius: 10, padding: "10px 12px", minWidth: 200,
       boxShadow: live ? "0 0 12px rgba(248,113,113,.15)" : "none",
     }}>
@@ -549,7 +570,6 @@ function BracketMatch({ match }) {
 
 function Bracket({ matches }) {
   const knockout = matches.filter(m => !isGroupStage(m.stage));
-
   if (!knockout.length) return (
     <div style={{ color: "#4b5563", textAlign: "center", padding: 40, fontSize: 14 }}>
       Le tableau apparaîtra à partir des 16èmes de finale
@@ -558,18 +578,17 @@ function Bracket({ matches }) {
 
   const byStage = {};
   KNOCKOUT_ORDER.forEach(s => { byStage[s] = knockout.filter(m => m.stage === s); });
-
   const stages = KNOCKOUT_ORDER.filter(s => byStage[s]?.length > 0);
 
   return (
     <div style={{ overflowX: "auto", paddingBottom: 16 }}>
-      <div style={{ display: "flex", gap: 24, minWidth: "max-content" }}>
+      <div style={{ display: "flex", gap: 24, minWidth: "max-content", alignItems: "flex-start" }}>
         {stages.map(stage => (
           <div key={stage} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ color: "#d97706", fontWeight: 800, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4, textAlign: "center" }}>
               {stageLabel(stage)}
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 16, justifyContent: "center", flex: 1 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {byStage[stage].map(m => <BracketMatch key={m.id} match={m} />)}
             </div>
           </div>
@@ -579,7 +598,8 @@ function Bracket({ matches }) {
   );
 }
 
-// ─── CLASSEMENT GÉNÉRAL ──────────────────────────────────────────────────────
+// ─── LEADERBOARD ─────────────────────────────────────────────────────────────
+
 function Leaderboard({ board }) {
   const medals = ["🥇", "🥈", "🥉"];
   if (!board.length) return (
@@ -617,7 +637,8 @@ function Leaderboard({ board }) {
   );
 }
 
-// ─── APP PRINCIPALE ───────────────────────────────────────────────────────────
+// ─── APP ─────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [participant, setParticipant] = useState(null);
   const [tab, setTab] = useState("matches");
@@ -626,8 +647,8 @@ export default function App() {
   const { pronostics, savePronostic } = usePronostics(participant?.id);
   const board = useLeaderboard(matches);
 
-  const liveCount     = matches.filter((m) => m.status === "live").length;
-  const finishedCount = matches.filter((m) => m.status === "finished").length;
+  const liveCount     = matches.filter(m => m.status === "live").length;
+  const finishedCount = matches.filter(m => m.status === "finished").length;
 
   if (!participant) return <LoginScreen onLogin={setParticipant} />;
 
@@ -649,9 +670,7 @@ export default function App() {
         display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <div>
-          <div style={{ fontSize: 10, color: "#d97706", fontWeight: 800, letterSpacing: 2, textTransform: "uppercase" }}>
-            Moses Consulting
-          </div>
+          <div style={{ fontSize: 10, color: "#d97706", fontWeight: 800, letterSpacing: 2, textTransform: "uppercase" }}>Moses Consulting</div>
           <div style={{ fontWeight: 900, fontSize: 15, letterSpacing: -0.5 }}>Pronostics CDM 2026</div>
           <div style={{ fontSize: 11, color: "#6b7280" }}>
             {liveCount > 0 && <span style={{ color: "#f87171" }}>● {liveCount} en direct · </span>}
@@ -668,7 +687,7 @@ export default function App() {
 
       {/* Navigation */}
       <div style={{ display: "flex", borderBottom: "1px solid #111827", background: "#030712", overflowX: "auto" }}>
-        {TABS.map((t) => (
+        {TABS.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
             flex: 1, background: "none", border: "none", whiteSpace: "nowrap",
             color: tab === t.key ? "#d97706" : "#6b7280",
@@ -682,13 +701,12 @@ export default function App() {
 
       {/* Contenu */}
       <div style={{ maxWidth: 700, margin: "0 auto", padding: "20px 16px" }}>
-
         {tab === "matches" && (
           <>
             {loading && <div style={{ color: "#6b7280", textAlign: "center", padding: 40 }}>Chargement des matchs…</div>}
             {error && <div style={{ color: "#f87171", textAlign: "center", padding: 20, fontSize: 14 }}>Erreur : {error}</div>}
-            {["live", "upcoming", "finished"].map((status) => {
-              const group = matches.filter((m) => m.status === status);
+            {["live", "upcoming", "finished"].map(status => {
+              const group = matches.filter(m => m.status === status);
               if (!group.length) return null;
               const labels = { live: "🔴 En direct", upcoming: "⏰ À venir", finished: "✅ Terminés" };
               const colors = { live: "#f87171", upcoming: "#d97706", finished: "#4b5563" };
@@ -697,7 +715,7 @@ export default function App() {
                   <div style={{ color: colors[status], fontWeight: 800, fontSize: 13, letterSpacing: 2, textTransform: "uppercase", marginBottom: 12 }}>
                     {labels[status]}
                   </div>
-                  {group.map((m) => (
+                  {group.map(m => (
                     <MatchCard key={m.id} match={m} pronostic={pronostics[m.id]} onSave={savePronostic} />
                   ))}
                 </div>
@@ -705,21 +723,18 @@ export default function App() {
             })}
           </>
         )}
-
         {tab === "groups" && (
           <>
             <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>📊 Classements par poule</h2>
             <GroupStandings matches={matches} />
           </>
         )}
-
         {tab === "bracket" && (
           <>
             <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>🏆 Tableau des phases finales</h2>
             <Bracket matches={matches} />
           </>
         )}
-
         {tab === "leaderboard" && (
           <>
             <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 16 }}>🎖 Classement général</h2>
@@ -738,7 +753,7 @@ export default function App() {
           { pts: 3, label: "±1 but", color: "#f59e0b" },
           { pts: 1, label: "Bonne tendance", color: "#60a5fa" },
           { pts: 0, label: "Raté", color: "#4b5563" },
-        ].map((r) => (
+        ].map(r => (
           <div key={r.pts} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             <span style={{ fontWeight: 800, color: r.color }}>{r.pts} pts</span>
             <span style={{ color: "#6b7280" }}>{r.label}</span>

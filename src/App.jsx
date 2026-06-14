@@ -134,19 +134,18 @@ function useLeaderboard(matches) {
     if (!participants || !allPronostics) return;
     const scores = participants.map(p => {
       const myProno = allPronostics.filter(x => x.participant_id === p.id);
-      let total = 0, exact = 0, close = 0, trend = 0;
+      let total = 0, exact = 0, trend = 0;
       finished.forEach(m => {
         const prono = myProno.find(x => x.match_id === m.id);
         if (!prono || !m.score) return;
         const pts = computePoints(prono, m.score);
         total += pts;
-        if (pts === 5) exact++;
-        else if (pts === 3) close++;
+        if (pts === 3) exact++;
         else if (pts === 1) trend++;
       });
-      return { name: p.name, total, exact, close, trend };
+      return { name: p.name, total, exact, trend };
     });
-    setBoard(scores.sort((a, b) => b.total - a.total || b.exact - a.exact || b.close - a.close));
+    setBoard(scores.sort((a, b) => b.total - a.total || b.exact - a.exact || b.trend - a.trend));
   }, [matches]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -176,7 +175,6 @@ function LoginScreen({ onLogin }) {
 
     if (data) {
       if (!data.password) {
-        // Existant sans mot de passe → définit le mot de passe
         const { error } = await supabase
           .from("participants")
           .update({ password: hashed })
@@ -184,13 +182,11 @@ function LoginScreen({ onLogin }) {
         if (error) { setErr("Erreur, réessaie."); setLoading(false); return; }
         onLogin({ id: data.id, name: data.name });
       } else if (data.password === hashed) {
-        // Bon mot de passe
         onLogin({ id: data.id, name: data.name });
       } else {
         setErr("Mot de passe incorrect.");
       }
     } else {
-      // Nouveau participant
       if (password.length < 4) {
         setErr("Mot de passe trop court (min. 4 caractères).");
         setLoading(false); return;
@@ -431,7 +427,7 @@ function MatchCard({ match, pronostic, onSave }) {
   );
 }
 
-// ─── ONGLET PRONOSTICS (lecture seule, responsive) ────────────────────────────
+// ─── ONGLET PRONOSTICS ────────────────────────────────────────────────────────
 
 function AllPronostics({ matches, currentUser }) {
   const [allPronostics, setAllPronostics] = useState([]);
@@ -474,7 +470,6 @@ function AllPronostics({ matches, currentUser }) {
 
   return (
     <div>
-      {/* Filtre par match — scroll horizontal sur mobile */}
       <div style={{ overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8, minWidth: "max-content" }}>
           <button onClick={() => setSelectedMatch(null)} style={{
@@ -496,7 +491,6 @@ function AllPronostics({ matches, currentUser }) {
         </div>
       </div>
 
-      {/* Matchs */}
       {active.map(m => {
         const matchPronos = participants
           .map(p => ({ participant: p, prono: getProno(p.id, m.id) }))
@@ -504,7 +498,6 @@ function AllPronostics({ matches, currentUser }) {
 
         return (
           <div key={m.id} style={{ marginBottom: 24 }}>
-            {/* En-tête match — responsive */}
             <div style={{
               background: "#111827", border: "1px solid #1f2937",
               borderRadius: 12, padding: "12px 16px", marginBottom: 8,
@@ -532,17 +525,12 @@ function AllPronostics({ matches, currentUser }) {
               <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>{formatDate(m.kickoff)}</div>
             </div>
 
-            {/* Pronostics — grille responsive */}
             {matchPronos.length === 0 ? (
               <div style={{ color: "#4b5563", fontSize: 13, padding: "8px 16px", fontStyle: "italic" }}>
                 Aucun pronostic pour ce match
               </div>
             ) : (
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-                gap: 8,
-              }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
                 {matchPronos.map(({ participant, prono }) => {
                   const pts   = m.status === "finished" && m.score
                     ? computePoints(prono, m.score) : null;
@@ -555,15 +543,12 @@ function AllPronostics({ matches, currentUser }) {
                       border: `1px solid ${isMe ? "#d97706" : "#1f2937"}`,
                       borderRadius: 10, padding: "12px 14px",
                     }}>
-                      {/* Nom */}
                       <div style={{ fontSize: 12, color: isMe ? "#fbbf24" : "#9ca3af", fontWeight: isMe ? 800 : 500, marginBottom: 6 }}>
                         {isMe ? "👤 " : ""}{participant.name}
                       </div>
-                      {/* Score pronostiqué */}
                       <div style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 22, marginBottom: 6 }}>
                         {prono.home_score} – {prono.away_score}
                       </div>
-                      {/* Badge points */}
                       {badge && (
                         <div style={{
                           display: "inline-block",
@@ -776,8 +761,7 @@ function Leaderboard({ board }) {
             <div style={{ fontWeight: 800, color: i === 0 ? "#fbbf24" : "#e5e7eb", fontSize: 16 }}>{p.name}</div>
             <div style={{ fontSize: 12, color: "#6b7280", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
               <span style={{ color: "#22c55e" }}>⚡ {p.exact} exact</span>
-              <span style={{ color: "#f59e0b" }}>≈ {p.close} proche</span>
-              <span style={{ color: "#60a5fa" }}>↗ {p.trend} tendance</span>
+              <span style={{ color: "#f59e0b" }}>↗ {p.trend} tendance</span>
             </div>
           </div>
           <div style={{ fontSize: 28, fontWeight: 900, color: i === 0 ? "#fbbf24" : "#e5e7eb", fontFamily: "monospace" }}>
@@ -792,7 +776,12 @@ function Leaderboard({ board }) {
 // ─── APP ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [participant, setParticipant] = useState(null);
+  const [participant, setParticipant] = useState(() => {
+    try {
+      const saved = localStorage.getItem("mc_participant");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const [tab, setTab] = useState("matches");
 
   const { matches, loading, error } = useMatches();
@@ -802,7 +791,17 @@ export default function App() {
   const liveCount     = matches.filter(m => m.status === "live").length;
   const finishedCount = matches.filter(m => m.status === "finished").length;
 
-  if (!participant) return <LoginScreen onLogin={setParticipant} />;
+  const handleLogin = (p) => {
+    localStorage.setItem("mc_participant", JSON.stringify(p));
+    setParticipant(p);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("mc_participant");
+    setParticipant(null);
+  };
+
+  if (!participant) return <LoginScreen onLogin={handleLogin} />;
 
   const TABS = [
     { key: "matches",     label: "⚽ Matchs" },
@@ -830,7 +829,7 @@ export default function App() {
             {finishedCount} terminé{finishedCount > 1 ? "s" : ""}
           </div>
         </div>
-        <button onClick={() => setParticipant(null)} style={{
+        <button onClick={handleLogout} style={{
           background: "#1f2937", border: "none", color: "#9ca3af",
           borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer",
         }}>

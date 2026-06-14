@@ -913,9 +913,8 @@ export default function App() {
         padding: "12px 20px", display: "flex", justifyContent: "center", gap: 20, flexWrap: "wrap",
       }}>
         {[
-          { pts: 5, label: "Score exact",    color: "#22c55e" },
-          { pts: 3, label: "±1 but",         color: "#f59e0b" },
-          { pts: 1, label: "Bonne tendance", color: "#60a5fa" },
+          { pts: 3, label: "Score exact",    color: "#22c55e" },
+          { pts: 1, label: "Bonne tendance", color: "#f59e0b" },
           { pts: 0, label: "Raté",           color: "#4b5563" },
         ].map(r => (
           <div key={r.pts} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>

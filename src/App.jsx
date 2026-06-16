@@ -22,14 +22,23 @@ function formatTime(iso) {
   });
 }
 
+function formatPronoTime(iso) {
+  return new Date(iso).toLocaleString(undefined, {
+    day: "numeric", month: "short",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function timeUntil(iso) {
   const diff = new Date(iso) - Date.now();
   if (diff <= 0) return null;
-  const h = Math.floor(diff / 3_600_000);
-  const m = Math.floor((diff % 3_600_000) / 60_000);
-  const s = Math.floor((diff % 60_000) / 1_000);
-  if (h > 0) return `dans ${h}h${String(m).padStart(2, "0")}`;
-  if (m > 0) return `dans ${m}m${String(s).padStart(2, "0")}s`;
+  const days = Math.floor(diff / 86_400_000);
+  const h    = Math.floor((diff % 86_400_000) / 3_600_000);
+  const m    = Math.floor((diff % 3_600_000) / 60_000);
+  const s    = Math.floor((diff % 60_000) / 1_000);
+  if (days > 0) return `dans ${days}j ${h}h${String(m).padStart(2, "0")}`;
+  if (h > 0)    return `dans ${h}h${String(m).padStart(2, "0")}`;
+  if (m > 0)    return `dans ${m}m${String(s).padStart(2, "0")}s`;
   return `dans ${s}s`;
 }
 
@@ -79,16 +88,13 @@ async function registerServiceWorker() {
 async function subscribeToPush(participantId) {
   const reg = await registerServiceWorker();
   if (!reg) return false;
-
   const permission = await Notification.requestPermission();
   if (permission !== "granted") return false;
-
   try {
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
     });
-
     await supabase.from("push_subscriptions").upsert(
       { participant_id: participantId, subscription: sub.toJSON() },
       { onConflict: "participant_id" }
@@ -136,23 +142,6 @@ function useMatches() {
     const timer = setInterval(fetchMatches, hasLive ? POLL_LIVE_MS : POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [matches, fetchMatches]);
-
-  // Notifie 1h avant les matchs à venir sans pronostic
-  useEffect(() => {
-    if (!matches.length) return;
-    const upcoming = matches.filter(m => m.status === "upcoming");
-    upcoming.forEach(m => {
-      const diff = new Date(m.kickoff) - Date.now();
-      if (diff > 0 && diff < 3_600_000) {
-        // Dans moins d'1h — check si notif déjà envoyée
-        const key = `notif_${m.id}`;
-        if (!localStorage.getItem(key)) {
-          localStorage.setItem(key, "1");
-          // La notif sera envoyée par le hook useNotifScheduler
-        }
-      }
-    });
-  }, [matches]);
 
   return { matches, loading, error };
 }
@@ -226,7 +215,6 @@ function useNotifications(participant, matches, pronostics) {
   const [notifEnabled, setNotifEnabled] = useState(false);
   const [notifLoading, setNotifLoading] = useState(false);
 
-  // Vérifie si déjà abonné au chargement
   useEffect(() => {
     const check = async () => {
       if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
@@ -238,7 +226,6 @@ function useNotifications(participant, matches, pronostics) {
     check();
   }, []);
 
-  // Planifie les notifs pour les matchs à venir sans pronostic
   useEffect(() => {
     if (!notifEnabled || !participant) return;
     const upcoming = matches.filter(m => m.status === "upcoming");
@@ -246,10 +233,8 @@ function useNotifications(participant, matches, pronostics) {
       const diff = new Date(m.kickoff) - Date.now();
       const hasProno = !!pronostics[m.id];
       const key = `notif_sent_${m.id}`;
-      // Notif 1h avant si pas de pronostic
       if (diff > 0 && diff <= 3_600_000 && !hasProno && !localStorage.getItem(key)) {
         localStorage.setItem(key, "1");
-        // Affiche une notif locale immédiatement
         if (Notification.permission === "granted") {
           navigator.serviceWorker.ready.then(reg => {
             reg.showNotification("⚽ Match bientôt !", {
@@ -350,7 +335,6 @@ function LoginScreen({ onLogin }) {
       <div style={{ color: "#d97706", fontWeight: 700, fontSize: 13, letterSpacing: 3, marginBottom: 36, textTransform: "uppercase" }}>
         Coupe du Monde 2026
       </div>
-
       <div style={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 16, padding: 28, width: "100%", maxWidth: 380 }}>
         <label style={{ color: "#9ca3af", fontSize: 13, display: "block", marginBottom: 6 }}>Prénom</label>
         <input
@@ -418,7 +402,7 @@ function StatusBadge({ status, minute }) {
   return null;
 }
 
-function MatchCard({ match, pronostic, onSave }) {
+function MatchCard({ match, pronostic, onSave, onViewPronos }) {
   const kickedOff = new Date(match.kickoff) <= new Date();
   const locked = match.status === "live" || match.status === "finished" || kickedOff;
   const [h, setH]           = useState(pronostic?.home_score ?? "");
@@ -450,7 +434,7 @@ function MatchCard({ match, pronostic, onSave }) {
   };
 
   const canSave = h !== "" && a !== "" && !isNaN(+h) && !isNaN(+a) && +h >= 0 && +a >= 0 && !locked;
-  const missingProno = match.status === "upcoming" && !pronostic;
+  const missingProno = match.status === "upcoming" && !kickedOff && !pronostic;
 
   return (
     <div style={{
@@ -549,15 +533,27 @@ function MatchCard({ match, pronostic, onSave }) {
             </button>
           </div>
         )}
-        {badge && (
-          <div style={{
-            background: badge.bg, color: badge.color,
-            padding: "4px 12px", borderRadius: 99, fontSize: 12, fontWeight: 700,
-            border: `1px solid ${badge.color}33`,
-          }}>
-            {badge.label} · +{pts} pts
-          </div>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {badge && (
+            <div style={{
+              background: badge.bg, color: badge.color,
+              padding: "4px 12px", borderRadius: 99, fontSize: 12, fontWeight: 700,
+              border: `1px solid ${badge.color}33`,
+            }}>
+              {badge.label} · +{pts} pts
+            </div>
+          )}
+          {/* Bouton voir pronostics */}
+          {(match.status === "finished" || match.status === "live" || kickedOff) && (
+            <button onClick={() => onViewPronos(match.id)} style={{
+              background: "#1f2937", border: "1px solid #374151",
+              color: "#9ca3af", borderRadius: 8, padding: "4px 10px",
+              fontSize: 11, fontWeight: 600, cursor: "pointer",
+            }}>
+              👁 Voir les pronostics
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -565,17 +561,22 @@ function MatchCard({ match, pronostic, onSave }) {
 
 // ─── ONGLET PRONOSTICS ────────────────────────────────────────────────────────
 
-function AllPronostics({ matches, currentUser }) {
+function AllPronostics({ matches, currentUser, selectedMatchId, onClearFilter }) {
   const [allPronostics, setAllPronostics] = useState([]);
   const [participants, setParticipants]   = useState([]);
-  const [selectedMatch, setSelectedMatch] = useState(null);
+  const [selectedMatch, setSelectedMatch] = useState(selectedMatchId || null);
   const [loading, setLoading]             = useState(true);
+
+  // Sync selectedMatchId depuis l'extérieur
+  useEffect(() => {
+    if (selectedMatchId) setSelectedMatch(selectedMatchId);
+  }, [selectedMatchId]);
 
   useEffect(() => {
     const load = async () => {
       const [{ data: parts }, { data: pronos }] = await Promise.all([
         supabase.from("participants").select("id, name").order("name"),
-        supabase.from("pronostics").select("participant_id, match_id, home_score, away_score"),
+        supabase.from("pronostics").select("participant_id, match_id, home_score, away_score, updated_at"),
       ]);
       setParticipants(parts || []);
       setAllPronostics(pronos || []);
@@ -584,16 +585,15 @@ function AllPronostics({ matches, currentUser }) {
     load();
   }, []);
 
-  // Matchs triés : live en premier, puis terminés du plus récent au plus ancien
   const relevantMatches = matches
-    .filter(m =>
-      m.status === "finished" || m.status === "live" ||
-      allPronostics.some(p => p.match_id === m.id)
-    )
+    .filter(m => {
+      const kickedOff = new Date(m.kickoff) <= new Date();
+      return m.status === "finished" || m.status === "live" || kickedOff ||
+        allPronostics.some(p => p.match_id === m.id);
+    })
     .sort((a, b) => {
       const order = { live: 0, finished: 1, upcoming: 2 };
       if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
-      // À statut égal : plus récent en premier
       return new Date(b.kickoff) - new Date(a.kickoff);
     });
 
@@ -614,9 +614,10 @@ function AllPronostics({ matches, currentUser }) {
 
   return (
     <div>
+      {/* Filtre */}
       <div style={{ overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8, minWidth: "max-content" }}>
-          <button onClick={() => setSelectedMatch(null)} style={{
+          <button onClick={() => { setSelectedMatch(null); onClearFilter?.(); }} style={{
             background: !selectedMatch ? "#d97706" : "#1f2937",
             color: !selectedMatch ? "#fff" : "#9ca3af",
             border: "none", borderRadius: 8, padding: "6px 12px",
@@ -638,7 +639,9 @@ function AllPronostics({ matches, currentUser }) {
       {active.map(m => {
         const matchPronos = participants
           .map(p => ({ participant: p, prono: getProno(p.id, m.id) }))
-          .filter(x => x.prono);
+          .filter(x => x.prono)
+          // Tri par date de pronostic (plus ancien en premier = plus fiable)
+          .sort((a, b) => new Date(a.prono.updated_at) - new Date(b.prono.updated_at));
 
         return (
           <div key={m.id} style={{ marginBottom: 24 }}>
@@ -690,8 +693,12 @@ function AllPronostics({ matches, currentUser }) {
                       <div style={{ fontSize: 12, color: isMe ? "#fbbf24" : "#9ca3af", fontWeight: isMe ? 800 : 500, marginBottom: 6 }}>
                         {isMe ? "👤 " : ""}{participant.name}
                       </div>
-                      <div style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 22, marginBottom: 6 }}>
+                      <div style={{ fontWeight: 900, color: "#f9fafb", fontFamily: "monospace", fontSize: 22, marginBottom: 4 }}>
                         {prono.home_score} – {prono.away_score}
+                      </div>
+                      {/* Heure du pronostic */}
+                      <div style={{ fontSize: 10, color: "#4b5563", marginBottom: 6 }}>
+                        🕐 {formatPronoTime(prono.updated_at)}
                       </div>
                       {badge && (
                         <div style={{
@@ -913,7 +920,6 @@ function Leaderboard({ board }) {
           </div>
         </div>
       ))}
-      {/* Cuillère en bois */}
       {board.length > 1 && (
         <div style={{
           background: "#0d1117", border: "1px solid #1f2937",
@@ -945,7 +951,8 @@ export default function App() {
       return saved ? JSON.parse(saved) : null;
     } catch { return null; }
   });
-  const [tab, setTab] = useState("matches");
+  const [tab, setTab]                       = useState("matches");
+  const [pronosFilterMatchId, setPronosFilterMatchId] = useState(null);
 
   const { matches, loading, error } = useMatches();
   const { pronostics, savePronostic } = usePronostics(participant?.id);
@@ -965,9 +972,12 @@ export default function App() {
     setParticipant(null);
   };
 
-  if (!participant) return <LoginScreen onLogin={handleLogin} />;
+  // Clic sur "Voir les pronostics" depuis un match
+  const handleViewPronos = (matchId) => {
+    setPronosFilterMatchId(matchId);
+    setTab("pronos");
+  };
 
-  // Ordre des matchs : live → à venir (plus proche en premier) → terminés (plus récent en premier)
   const sortedMatches = [...matches].sort((a, b) => {
     const order = { live: 0, upcoming: 1, finished: 2 };
     if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
@@ -975,6 +985,8 @@ export default function App() {
     if (a.status === "finished") return new Date(b.kickoff) - new Date(a.kickoff);
     return 0;
   });
+
+  if (!participant) return <LoginScreen onLogin={handleLogin} />;
 
   const TABS = [
     { key: "matches",     label: "⚽ Matchs" },
@@ -1003,7 +1015,6 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Bouton notifications */}
           {"Notification" in window && (
             <button onClick={toggleNotif} disabled={notifLoading} title={notifEnabled ? "Désactiver les notifications" : "Activer les notifications"} style={{
               background: notifEnabled ? "#052e16" : "#1f2937",
@@ -1055,7 +1066,7 @@ export default function App() {
                     {labels[status]}
                   </div>
                   {group.map(m => (
-                    <MatchCard key={m.id} match={m} pronostic={pronostics[m.id]} onSave={savePronostic} />
+                    <MatchCard key={m.id} match={m} pronostic={pronostics[m.id]} onSave={savePronostic} onViewPronos={handleViewPronos} />
                   ))}
                 </div>
               );
@@ -1066,8 +1077,15 @@ export default function App() {
         {tab === "pronos" && (
           <>
             <h2 style={{ color: "#f9fafb", fontWeight: 900, fontSize: 20, marginBottom: 4 }}>👁 Pronostics de tous</h2>
-            <p style={{ color: "#6b7280", fontSize: 13, marginBottom: 16 }}>Lecture seule — les pronostics à venir sont visibles après le coup d'envoi.</p>
-            <AllPronostics matches={matches} currentUser={participant.name} />
+            <p style={{ color: "#6b7280", fontSize: 13, marginBottom: 16 }}>
+              Lecture seule — heure de dépôt visible pour chaque pronostic.
+            </p>
+            <AllPronostics
+              matches={matches}
+              currentUser={participant.name}
+              selectedMatchId={pronosFilterMatchId}
+              onClearFilter={() => setPronosFilterMatchId(null)}
+            />
           </>
         )}
 

@@ -5,6 +5,7 @@ import { computePoints, pointBadge } from "./points";
 
 const POLL_INTERVAL_MS = 60_000;
 const POLL_LIVE_MS     = 30_000;
+const VAPID_PUBLIC_KEY = "BOqrM10PSHR99vvl1inYy4u3_w0BwkmxJ_nAKhux62ljmhRV4wXdS9Dkf24uj4h3z7T75VHskk5pHnmByKequd4";
 
 // ─── UTILITAIRES ─────────────────────────────────────────────────────────────
 
@@ -55,6 +56,58 @@ async function hashPassword(password) {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+// ─── NOTIFICATIONS ───────────────────────────────────────────────────────────
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    return reg;
+  } catch (e) {
+    console.error("SW registration failed:", e);
+    return null;
+  }
+}
+
+async function subscribeToPush(participantId) {
+  const reg = await registerServiceWorker();
+  if (!reg) return false;
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") return false;
+
+  try {
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+
+    await supabase.from("push_subscriptions").upsert(
+      { participant_id: participantId, subscription: sub.toJSON() },
+      { onConflict: "participant_id" }
+    );
+    return true;
+  } catch (e) {
+    console.error("Push subscription failed:", e);
+    return false;
+  }
+}
+
+async function unsubscribeFromPush(participantId) {
+  const reg = await navigator.serviceWorker?.getRegistration();
+  if (!reg) return;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) await sub.unsubscribe();
+  await supabase.from("push_subscriptions").delete().eq("participant_id", participantId);
+}
+
 // ─── HOOKS ───────────────────────────────────────────────────────────────────
 
 function useMatches() {
@@ -83,6 +136,23 @@ function useMatches() {
     const timer = setInterval(fetchMatches, hasLive ? POLL_LIVE_MS : POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [matches, fetchMatches]);
+
+  // Notifie 1h avant les matchs à venir sans pronostic
+  useEffect(() => {
+    if (!matches.length) return;
+    const upcoming = matches.filter(m => m.status === "upcoming");
+    upcoming.forEach(m => {
+      const diff = new Date(m.kickoff) - Date.now();
+      if (diff > 0 && diff < 3_600_000) {
+        // Dans moins d'1h — check si notif déjà envoyée
+        const key = `notif_${m.id}`;
+        if (!localStorage.getItem(key)) {
+          localStorage.setItem(key, "1");
+          // La notif sera envoyée par le hook useNotifScheduler
+        }
+      }
+    });
+  }, [matches]);
 
   return { matches, loading, error };
 }
@@ -150,6 +220,63 @@ function useLeaderboard(matches) {
 
   useEffect(() => { refresh(); }, [refresh]);
   return board;
+}
+
+function useNotifications(participant, matches, pronostics) {
+  const [notifEnabled, setNotifEnabled] = useState(false);
+  const [notifLoading, setNotifLoading] = useState(false);
+
+  // Vérifie si déjà abonné au chargement
+  useEffect(() => {
+    const check = async () => {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+      const reg = await navigator.serviceWorker?.getRegistration();
+      if (!reg) return;
+      const sub = await reg.pushManager.getSubscription();
+      setNotifEnabled(!!sub);
+    };
+    check();
+  }, []);
+
+  // Planifie les notifs pour les matchs à venir sans pronostic
+  useEffect(() => {
+    if (!notifEnabled || !participant) return;
+    const upcoming = matches.filter(m => m.status === "upcoming");
+    upcoming.forEach(m => {
+      const diff = new Date(m.kickoff) - Date.now();
+      const hasProno = !!pronostics[m.id];
+      const key = `notif_sent_${m.id}`;
+      // Notif 1h avant si pas de pronostic
+      if (diff > 0 && diff <= 3_600_000 && !hasProno && !localStorage.getItem(key)) {
+        localStorage.setItem(key, "1");
+        // Affiche une notif locale immédiatement
+        if (Notification.permission === "granted") {
+          navigator.serviceWorker.ready.then(reg => {
+            reg.showNotification("⚽ Match bientôt !", {
+              body: `${m.home.shortName || m.home.name} vs ${m.away.shortName || m.away.name} — pense à pronostiquer !`,
+              icon: "/icon.png",
+              data: { url: "/" },
+            });
+          });
+        }
+      }
+    });
+  }, [matches, pronostics, notifEnabled, participant]);
+
+  const toggle = async () => {
+    if (!participant) return;
+    setNotifLoading(true);
+    if (notifEnabled) {
+      await unsubscribeFromPush(participant.id);
+      setNotifEnabled(false);
+    } else {
+      const ok = await subscribeToPush(participant.id);
+      setNotifEnabled(ok);
+    }
+    setNotifLoading(false);
+  };
+
+  return { notifEnabled, notifLoading, toggle };
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -322,19 +449,27 @@ function MatchCard({ match, pronostic, onSave }) {
   };
 
   const canSave = h !== "" && a !== "" && !isNaN(+h) && !isNaN(+a) && +h >= 0 && +a >= 0 && !locked;
+  const missingProno = match.status === "upcoming" && !pronostic;
 
   return (
     <div style={{
       background: "linear-gradient(135deg,#111827,#1a1f2e)",
-      border: `1px solid ${match.status === "live" ? "#7f1d1d" : "#1f2937"}`,
+      border: `1px solid ${match.status === "live" ? "#7f1d1d" : missingProno ? "#92400e" : "#1f2937"}`,
       borderRadius: 14, padding: "18px 20px", marginBottom: 12,
-      boxShadow: match.status === "live" ? "0 0 18px rgba(248,113,113,.12)" : "none",
+      boxShadow: match.status === "live" ? "0 0 18px rgba(248,113,113,.12)" : missingProno ? "0 0 12px rgba(146,64,14,.15)" : "none",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <span style={{ fontSize: 11, color: "#4b5563", textTransform: "uppercase", letterSpacing: 1 }}>
           {isGroupStage(match.stage) ? match.group : stageLabel(match.stage)}
         </span>
-        <StatusBadge status={match.status} minute={match.minute} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {missingProno && (
+            <span style={{ fontSize: 10, color: "#d97706", fontWeight: 700, background: "#2d1d00", padding: "2px 7px", borderRadius: 99 }}>
+              ⚠ À pronostiquer
+            </span>
+          )}
+          <StatusBadge status={match.status} minute={match.minute} />
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -448,10 +583,18 @@ function AllPronostics({ matches, currentUser }) {
     load();
   }, []);
 
-  const relevantMatches = matches.filter(m =>
-    m.status === "finished" || m.status === "live" ||
-    allPronostics.some(p => p.match_id === m.id)
-  );
+  // Matchs triés : live en premier, puis terminés du plus récent au plus ancien
+  const relevantMatches = matches
+    .filter(m =>
+      m.status === "finished" || m.status === "live" ||
+      allPronostics.some(p => p.match_id === m.id)
+    )
+    .sort((a, b) => {
+      const order = { live: 0, finished: 1, upcoming: 2 };
+      if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+      // À statut égal : plus récent en premier
+      return new Date(b.kickoff) - new Date(a.kickoff);
+    });
 
   const getProno = (participantId, matchId) =>
     allPronostics.find(p => p.participant_id === participantId && p.match_id === matchId);
@@ -769,6 +912,25 @@ function Leaderboard({ board }) {
           </div>
         </div>
       ))}
+      {/* Cuillère en bois */}
+      {board.length > 1 && (
+        <div style={{
+          background: "#0d1117", border: "1px solid #1f2937",
+          borderRadius: 12, padding: "14px 18px", marginTop: 8,
+          display: "flex", alignItems: "center", gap: 14, opacity: 0.7,
+        }}>
+          <div style={{ fontSize: 22, minWidth: 34, textAlign: "center" }}>🥄</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 800, color: "#6b7280", fontSize: 14 }}>
+              {board[board.length - 1].name}
+            </div>
+            <div style={{ fontSize: 11, color: "#4b5563" }}>Cuillère en bois 😂</div>
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: "#6b7280", fontFamily: "monospace" }}>
+            {board[board.length - 1].total}<span style={{ fontSize: 11, fontWeight: 400 }}> pts</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -787,6 +949,7 @@ export default function App() {
   const { matches, loading, error } = useMatches();
   const { pronostics, savePronostic } = usePronostics(participant?.id);
   const board = useLeaderboard(matches);
+  const { notifEnabled, notifLoading, toggle: toggleNotif } = useNotifications(participant, matches, pronostics);
 
   const liveCount     = matches.filter(m => m.status === "live").length;
   const finishedCount = matches.filter(m => m.status === "finished").length;
@@ -802,6 +965,15 @@ export default function App() {
   };
 
   if (!participant) return <LoginScreen onLogin={handleLogin} />;
+
+  // Ordre des matchs : live → à venir (plus proche en premier) → terminés (plus récent en premier)
+  const sortedMatches = [...matches].sort((a, b) => {
+    const order = { live: 0, upcoming: 1, finished: 2 };
+    if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+    if (a.status === "upcoming") return new Date(a.kickoff) - new Date(b.kickoff);
+    if (a.status === "finished") return new Date(b.kickoff) - new Date(a.kickoff);
+    return 0;
+  });
 
   const TABS = [
     { key: "matches",     label: "⚽ Matchs" },
@@ -829,12 +1001,26 @@ export default function App() {
             {finishedCount} terminé{finishedCount > 1 ? "s" : ""}
           </div>
         </div>
-        <button onClick={handleLogout} style={{
-          background: "#1f2937", border: "none", color: "#9ca3af",
-          borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer",
-        }}>
-          👤 {participant.name}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Bouton notifications */}
+          {"Notification" in window && (
+            <button onClick={toggleNotif} disabled={notifLoading} title={notifEnabled ? "Désactiver les notifications" : "Activer les notifications"} style={{
+              background: notifEnabled ? "#052e16" : "#1f2937",
+              border: `1px solid ${notifEnabled ? "#16a34a" : "#374151"}`,
+              color: notifEnabled ? "#22c55e" : "#6b7280",
+              borderRadius: 8, padding: "6px 10px", fontSize: 14,
+              cursor: "pointer", transition: "all .2s",
+            }}>
+              {notifLoading ? "…" : notifEnabled ? "🔔" : "🔕"}
+            </button>
+          )}
+          <button onClick={handleLogout} style={{
+            background: "#1f2937", border: "none", color: "#9ca3af",
+            borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer",
+          }}>
+            👤 {participant.name}
+          </button>
+        </div>
       </div>
 
       {/* Navigation */}
@@ -858,7 +1044,7 @@ export default function App() {
             {loading && <div style={{ color: "#6b7280", textAlign: "center", padding: 40 }}>Chargement des matchs…</div>}
             {error && <div style={{ color: "#f87171", textAlign: "center", padding: 20, fontSize: 14 }}>Erreur : {error}</div>}
             {["live", "upcoming", "finished"].map(status => {
-              const group = matches.filter(m => m.status === status);
+              const group = sortedMatches.filter(m => m.status === status);
               if (!group.length) return null;
               const labels = { live: "🔴 En direct", upcoming: "⏰ À venir", finished: "✅ Terminés" };
               const colors = { live: "#f87171", upcoming: "#d97706", finished: "#4b5563" };

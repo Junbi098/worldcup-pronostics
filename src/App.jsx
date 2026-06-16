@@ -419,7 +419,8 @@ function StatusBadge({ status, minute }) {
 }
 
 function MatchCard({ match, pronostic, onSave }) {
-  const locked = match.status === "live" || match.status === "finished";
+  const kickedOff = new Date(match.kickoff) <= new Date();
+  const locked = match.status === "live" || match.status === "finished" || kickedOff;
   const [h, setH]           = useState(pronostic?.home_score ?? "");
   const [a, setA]           = useState(pronostic?.away_score ?? "");
   const [saving, setSaving] = useState(false);

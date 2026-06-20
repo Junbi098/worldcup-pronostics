@@ -2,11 +2,10 @@
 // Proxy vers football-data.org, cache la clé API
 // Route : GET /api/matches
 
-const COMPETITION_ID = 2000; // FIFA World Cup 2026 sur football-data.org
+const COMPETITION_ID = 2000; // FIFA World Cup 2026
 const API_BASE = "https://api.football-data.org/v4";
 
 export default async function handler(req, res) {
-  // CORS pour le frontend Vercel
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -19,7 +18,7 @@ export default async function handler(req, res) {
 
   try {
     const response = await fetch(
-      `${API_BASE}/competitions/${COMPETITION_ID}/matches?status=SCHEDULED,LIVE,IN_PLAY,PAUSED,FINISHED`,
+      `${API_BASE}/competitions/${COMPETITION_ID}/matches?status=SCHEDULED,TIMED,LIVE,IN_PLAY,PAUSED,FINISHED`,
       { headers: { "X-Auth-Token": apiKey } }
     );
 
@@ -33,16 +32,26 @@ export default async function handler(req, res) {
     // Normalisation des matchs pour le frontend
     const matches = (data.matches || []).map((m) => ({
       id: m.id,
-      group: m.group || m.stage || "Phase de groupes",
-      home: { name: m.homeTeam.name, shortName: m.homeTeam.shortName, crest: m.homeTeam.crest },
-      away: { name: m.awayTeam.name, shortName: m.awayTeam.shortName, crest: m.awayTeam.crest },
+      stage: m.stage || null,           // GROUP_STAGE | LAST_32 | LAST_16 | QUARTER_FINALS | SEMI_FINALS | THIRD_PLACE | FINAL
+      group: m.group || null,           // GROUP_A...GROUP_L ou null pour knockout
+      matchday: m.matchday || null,     // 1, 2, 3 pour phase de poules, null pour knockout
+      home: {
+        name: m.homeTeam?.name || "À déterminer",
+        shortName: m.homeTeam?.shortName || "TBD",
+        crest: m.homeTeam?.crest || null,
+      },
+      away: {
+        name: m.awayTeam?.name || "À déterminer",
+        shortName: m.awayTeam?.shortName || "TBD",
+        crest: m.awayTeam?.crest || null,
+      },
       kickoff: m.utcDate,
       status: normalizeStatus(m.status),
       minute: m.minute || null,
       score:
-        m.score.fullTime.home !== null
+        m.score?.fullTime?.home !== null && m.score?.fullTime?.home !== undefined
           ? { home: m.score.fullTime.home, away: m.score.fullTime.away }
-          : m.score.halfTime.home !== null
+          : m.score?.halfTime?.home !== null && m.score?.halfTime?.home !== undefined
           ? { home: m.score.halfTime.home, away: m.score.halfTime.away }
           : null,
     }));
@@ -57,7 +66,7 @@ export default async function handler(req, res) {
 }
 
 function normalizeStatus(status) {
-  if (["IN_PLAY", "PAUSED", "HALFTIME"].includes(status)) return "live";
+  if (["IN_PLAY", "PAUSED", "LIVE", "HALFTIME"].includes(status)) return "live";
   if (["FINISHED", "AWARDED"].includes(status)) return "finished";
-  return "upcoming"; // SCHEDULED, TIMED, etc.
+  return "upcoming"; // SCHEDULED, TIMED, POSTPONED, etc.
 }

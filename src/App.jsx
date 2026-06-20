@@ -1,12 +1,12 @@
 // src/App.jsx
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Tv2, Eye, BarChart2, Trophy, Swords, Bell, User, LogOut,
   CheckCircle2, Radio, Clock, ChevronRight, Lock, AlertTriangle,
-  Calendar, Filter, TrendingUp, Utensils, Medal, Award
+  Calendar, TrendingUp, Utensils, Medal, Award
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
-import { computePoints, pointBadge } from "./points";
+import { computePoints } from "./points";
 
 const POLL_INTERVAL_MS = 60_000;
 const POLL_LIVE_MS     = 30_000;
@@ -60,18 +60,26 @@ function timeUntil(iso) {
 }
 
 function isGroupStage(stage) {
-  return !stage || stage === "GROUP_STAGE" || stage.startsWith("Groupe") || stage.startsWith("Group");
+  return stage === "GROUP_STAGE";
 }
 
 function stageLabel(stage) {
   const map = {
-    "ROUND_OF_16":    "16èmes de finale",
+    "GROUP_STAGE":    "Phase de poules",
+    "LAST_32":        "16èmes de finale",
+    "LAST_16":        "8èmes de finale",
     "QUARTER_FINALS": "Quarts de finale",
     "SEMI_FINALS":    "Demi-finales",
     "THIRD_PLACE":    "Petite finale",
     "FINAL":          "Finale",
   };
-  return map[stage] || stage;
+  return map[stage] || stage || "";
+}
+
+// GROUP_E → "Groupe E"
+function groupLabel(group) {
+  if (!group) return "";
+  return group.replace(/^GROUP[_-]?/i, "Groupe ");
 }
 
 async function hashPassword(password) {
@@ -189,36 +197,21 @@ function usePronostics(participantId) {
   return { pronostics, savePronostic };
 }
 
-function useLeaderboard(matches) {
-  const [board, setBoard] = useState([]);
+// Récupère les données brutes participants + pronostics
+// La logique de calcul est faite dans LeaderboardScreen avec un useMemo
+function useLeaderboardData() {
+  const [data, setData] = useState({ participants: [], allPronostics: [] });
 
   const refresh = useCallback(async () => {
-    const finished = matches.filter(m => m.status === "finished");
-    if (!finished.length) { setBoard([]); return; }
-    const { data: participants } = await supabase.from("participants").select("id, name");
-    const { data: allPronostics } = await supabase
-      .from("pronostics")
-      .select("participant_id, match_id, home_score, away_score")
-      .in("match_id", finished.map(m => m.id));
-    if (!participants || !allPronostics) return;
-    const scores = participants.map(p => {
-      const myProno = allPronostics.filter(x => x.participant_id === p.id);
-      let total = 0, exact = 0, trend = 0;
-      finished.forEach(m => {
-        const prono = myProno.find(x => x.match_id === m.id);
-        if (!prono || !m.score) return;
-        const pts = computePoints(prono, m.score);
-        total += pts;
-        if (pts === 3) exact++;
-        else if (pts === 1) trend++;
-      });
-      return { name: p.name, total, exact, trend };
-    });
-    setBoard(scores.sort((a, b) => b.total - a.total || b.exact - a.exact || b.trend - a.trend));
-  }, [matches]);
+    const [{ data: parts }, { data: pronos }] = await Promise.all([
+      supabase.from("participants").select("id, name"),
+      supabase.from("pronostics").select("participant_id, match_id, home_score, away_score"),
+    ]);
+    setData({ participants: parts || [], allPronostics: pronos || [] });
+  }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
-  return board;
+  return data;
 }
 
 function useNotifications(participant, matches, pronostics) {
@@ -235,6 +228,13 @@ function useNotifications(participant, matches, pronostics) {
     };
     check();
   }, []);
+
+  // Nettoyer les clés notif_sent des matchs terminés
+  useEffect(() => {
+    matches.filter(m => m.status === "finished").forEach(m => {
+      localStorage.removeItem(`notif_sent_${m.id}`);
+    });
+  }, [matches]);
 
   useEffect(() => {
     if (!notifEnabled || !participant) return;
@@ -274,7 +274,7 @@ function useNotifications(participant, matches, pronostics) {
 
 // ─── SHARED UI ───────────────────────────────────────────────────────────────
 
-function FilterBar({ options, active, onChange }) {
+function FilterBar({ options, active, onChange, labelFn }) {
   return (
     <div style={{ overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
       <div style={{ display: "flex", gap: 6, minWidth: "max-content" }}>
@@ -286,7 +286,7 @@ function FilterBar({ options, active, onChange }) {
             borderRadius: 99, padding: "5px 14px",
             fontSize: 12, fontWeight: 700, cursor: "pointer",
             whiteSpace: "nowrap", transition: "all .15s",
-          }}>{o}</button>
+          }}>{labelFn ? labelFn(o) : o}</button>
         ))}
       </div>
     </div>
@@ -385,7 +385,7 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
       {/* Top */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <span style={{ fontSize: 10, color: "#4b5563", textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
-          {isGroupStage(match.stage) ? match.group : stageLabel(match.stage)}
+          {isGroupStage(match.stage) ? groupLabel(match.group) : stageLabel(match.stage)}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {missingProno && (
@@ -498,6 +498,14 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
 
 // ─── MATCHES SCREEN ──────────────────────────────────────────────────────────
 
+const MATCHES_STAGE_MAP = {
+  "16èmes": "LAST_32",
+  "8èmes":  "LAST_16",
+  "Quarts": "QUARTER_FINALS",
+  "Demis":  "SEMI_FINALS",
+  "Finale": "FINAL", // gère aussi THIRD_PLACE
+};
+
 function MatchesScreen({ matches, pronostics, onSave, onViewPronos, loading, error, isMobile }) {
   const [filter, setFilter] = useState("Tous");
   const filters = ["Tous","J1","J2","J3","16èmes","8èmes","Quarts","Demis","Finale"];
@@ -507,12 +515,8 @@ function MatchesScreen({ matches, pronostics, onSave, onViewPronos, loading, err
     if (filter === "J1") return m.matchday === 1 && isGroupStage(m.stage);
     if (filter === "J2") return m.matchday === 2 && isGroupStage(m.stage);
     if (filter === "J3") return m.matchday === 3 && isGroupStage(m.stage);
-    if (filter === "16èmes") return m.stage === "ROUND_OF_16";
-    if (filter === "8èmes") return m.stage === "ROUND_OF_8";
-    if (filter === "Quarts") return m.stage === "QUARTER_FINALS";
-    if (filter === "Demis") return m.stage === "SEMI_FINALS";
     if (filter === "Finale") return m.stage === "FINAL" || m.stage === "THIRD_PLACE";
-    return false;
+    return m.stage === MATCHES_STAGE_MAP[filter];
   };
 
   const sorted = [...matches].sort((a, b) => {
@@ -529,9 +533,9 @@ function MatchesScreen({ matches, pronostics, onSave, onViewPronos, loading, err
   const finished = sorted.filter(m => m.status === "finished");
 
   const upByDay = {};
-  upcoming.forEach(m => { const d = m.matchday||1; if (!upByDay[d]) upByDay[d]=[]; upByDay[d].push(m); });
+  upcoming.forEach(m => { const d = m.matchday || 1; if (!upByDay[d]) upByDay[d]=[]; upByDay[d].push(m); });
   const finByDay = {};
-  finished.forEach(m => { const d = m.matchday||1; if (!finByDay[d]) finByDay[d]=[]; finByDay[d].push(m); });
+  finished.forEach(m => { const d = m.matchday || 1; if (!finByDay[d]) finByDay[d]=[]; finByDay[d].push(m); });
   const knockByStage = {};
   knockout.forEach(m => { if (!knockByStage[m.stage]) knockByStage[m.stage]=[]; knockByStage[m.stage].push(m); });
 
@@ -592,7 +596,7 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
   const [selectedMatch, setSelectedMatch] = useState(selectedMatchId || null);
   const [loading, setLoading]             = useState(true);
   const [filter, setFilter]               = useState("Tous");
-  const filters = ["Tous","En cours","À venir","Terminés","J1","J2","J3"];
+  const filters = ["Tous","En cours","À venir","Terminés","J1","J2","J3","Phase finale"];
 
   useEffect(() => {
     if (selectedMatchId) setSelectedMatch(selectedMatchId);
@@ -622,19 +626,18 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
     if (filter === "J1") return m.matchday === 1;
     if (filter === "J2") return m.matchday === 2;
     if (filter === "J3") return m.matchday === 3;
-    return true;
+    if (filter === "Phase finale") return !isGroupStage(m.stage);
+    return true; // "Tous"
   };
 
+  // Affiche tous les matchs (plus de filtre "au moins 1 prono")
+  // Tri : live d'abord, puis upcoming (ASCENDANT — prochain en haut), puis finished (DESCENDANT — récent en haut)
   const relevantMatches = matches
-    .filter(m => {
-      const kickedOff = new Date(m.kickoff) <= new Date();
-      return m.status === "finished" || m.status === "live" || kickedOff ||
-        allPronostics.some(p => p.match_id === m.id);
-    })
     .filter(filterMatch)
     .sort((a, b) => {
-      const order = { live: 0, finished: 1, upcoming: 2 };
+      const order = { live: 0, upcoming: 1, finished: 2 };
       if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+      if (a.status === "upcoming") return new Date(a.kickoff) - new Date(b.kickoff);
       return new Date(b.kickoff) - new Date(a.kickoff);
     });
 
@@ -720,7 +723,7 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
 
   return (
     <div>
-      <FilterBar options={filters} active={filter} onChange={f => { setFilter(f); setSelectedMatch(null); }} />
+      <FilterBar options={filters} active={filter} onChange={f => { setFilter(f); setSelectedMatch(null); onClearFilter?.(); }} />
 
       {/* Filtre par match */}
       {relevantMatches.length > 0 && (
@@ -773,10 +776,10 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
         </div>
       ))}
 
-      {/* À venir */}
+      {/* À venir — affichage en bloc UpcomingBlock */}
       {active.filter(m => m.status === "upcoming").length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <SectionTitle icon={Clock} label="À venir" />
+          <SectionTitle icon={Clock} label="À venir" count={active.filter(m => m.status === "upcoming").length} />
           {active.filter(m => m.status === "upcoming").map(m => <UpcomingBlock key={m.id} m={m} />)}
         </div>
       )}
@@ -819,7 +822,7 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
 
       {active.length === 0 && (
         <div style={{ color: "#4b5563", textAlign: "center", padding: 40, fontSize: 14 }}>
-          Aucun pronostic pour cette sélection
+          Aucun match pour cette sélection
         </div>
       )}
     </div>
@@ -843,7 +846,7 @@ function GroupStandings({ matches, isMobile }) {
 
   return (
     <div>
-      <FilterBar options={filters} active={filter} onChange={setFilter} />
+      <FilterBar options={filters} active={filter} onChange={setFilter} labelFn={o => o === "Tous" ? "Tous" : groupLabel(o)} />
       <div style={isMobile ? {} : { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         {visibleGroups.map(group => {
           const groupMatches = matches.filter(m => m.group === group);
@@ -867,7 +870,7 @@ function GroupStandings({ matches, isMobile }) {
           );
           return (
             <div key={group} style={{ marginBottom: isMobile ? 24 : 0 }}>
-              <div style={{ color: "#d97706", fontWeight: 800, fontSize: 12, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>{group}</div>
+              <div style={{ color: "#d97706", fontWeight: 800, fontSize: 12, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>{groupLabel(group)}</div>
               <div style={{ background: "#111827", borderRadius: 12, overflow: "hidden", border: "1px solid #1f2937" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 28px 28px 28px 28px 36px 36px", gap: 2, padding: "8px 12px", borderBottom: "1px solid #1f2937" }}>
                   {["Équipe","J","G","N","P","DB","Pts"].map(h => (
@@ -909,14 +912,21 @@ function GroupStandings({ matches, isMobile }) {
 
 // ─── BRACKET ─────────────────────────────────────────────────────────────────
 
-const KNOCKOUT_ORDER = ["ROUND_OF_16","ROUND_OF_8","QUARTER_FINALS","SEMI_FINALS","THIRD_PLACE","FINAL"];
+const KNOCKOUT_ORDER = ["LAST_32","LAST_16","QUARTER_FINALS","SEMI_FINALS","THIRD_PLACE","FINAL"];
+
+const BRACKET_STAGE_MAP = {
+  "16èmes": "LAST_32",
+  "8èmes":  "LAST_16",
+  "Quarts": "QUARTER_FINALS",
+  "Demis":  "SEMI_FINALS",
+  "Finale": "FINAL",
+};
 
 function BracketScreen({ matches }) {
   const [filter, setFilter] = useState("Tous");
   const stageFilters = ["Tous","16èmes","8èmes","Quarts","Demis","Finale"];
-  const stageMap = { "16èmes":"ROUND_OF_16","8èmes":"ROUND_OF_8","Quarts":"QUARTER_FINALS","Demis":"SEMI_FINALS","Finale":"FINAL" };
 
-  const knockout = matches.filter(m => !isGroupStage(m.stage));
+  const knockout = matches.filter(m => !isGroupStage(m.stage) && m.stage);
   if (!knockout.length) return (
     <div style={{ color: "#4b5563", textAlign: "center", padding: 40, fontSize: 14 }}>
       Le tableau apparaîtra à partir des 16èmes de finale
@@ -924,9 +934,15 @@ function BracketScreen({ matches }) {
   );
 
   const byStage = {};
-  KNOCKOUT_ORDER.forEach(s => { byStage[s] = knockout.filter(m => m.stage === s); });
+  KNOCKOUT_ORDER.forEach(s => {
+    byStage[s] = knockout
+      .filter(m => m.stage === s)
+      .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+  });
   const stages = KNOCKOUT_ORDER.filter(s => byStage[s]?.length > 0);
-  const visibleStages = filter === "Tous" ? stages : stages.filter(s => s === stageMap[filter]);
+  const visibleStages = filter === "Tous"
+    ? stages
+    : stages.filter(s => s === BRACKET_STAGE_MAP[filter] || (filter === "Finale" && s === "THIRD_PLACE"));
 
   return (
     <div>
@@ -996,24 +1012,57 @@ function BracketScreen({ matches }) {
 
 // ─── LEADERBOARD ─────────────────────────────────────────────────────────────
 
-function LeaderboardScreen({ board, isMobile }) {
+function LeaderboardScreen({ matches, isMobile }) {
   const [filter, setFilter] = useState("Global");
   const filters = ["Global","J1","J2","J3","Phase finale"];
   const medals = [Trophy, Award, Medal];
   const medalColors = ["#fbbf24","#9ca3af","#d97706"];
 
+  const { participants, allPronostics } = useLeaderboardData();
+
+  // Calcul du classement, filtré selon le segment choisi
+  const board = useMemo(() => {
+    let finished = matches.filter(m => m.status === "finished");
+    if (filter === "J1") finished = finished.filter(m => m.matchday === 1 && isGroupStage(m.stage));
+    else if (filter === "J2") finished = finished.filter(m => m.matchday === 2 && isGroupStage(m.stage));
+    else if (filter === "J3") finished = finished.filter(m => m.matchday === 3 && isGroupStage(m.stage));
+    else if (filter === "Phase finale") finished = finished.filter(m => !isGroupStage(m.stage));
+
+    if (!finished.length || !participants.length) return [];
+
+    const finishedIds = new Set(finished.map(m => m.id));
+    const matchById = new Map(finished.map(m => [m.id, m]));
+
+    return participants.map(p => {
+      const myPronos = allPronostics.filter(x => x.participant_id === p.id && finishedIds.has(x.match_id));
+      let total = 0, exact = 0, trend = 0;
+      myPronos.forEach(prono => {
+        const m = matchById.get(prono.match_id);
+        if (!m || !m.score) return;
+        const pts = computePoints(prono, m.score);
+        total += pts;
+        if (pts === 3) exact++;
+        else if (pts === 1) trend++;
+      });
+      return { name: p.name, total, exact, trend };
+    }).sort((a, b) => b.total - a.total || b.exact - a.exact || b.trend - a.trend);
+  }, [matches, filter, participants, allPronostics]);
+
   if (!board.length) return (
     <div>
       <FilterBar options={filters} active={filter} onChange={setFilter} />
       <div style={{ color: "#4b5563", textAlign: "center", padding: 48, fontSize: 14 }}>
-        Le classement apparaîtra après la fin des premiers matchs
+        {filter === "Global"
+          ? "Le classement apparaîtra après la fin des premiers matchs"
+          : `Aucun match terminé pour ${filter}`}
       </div>
     </div>
   );
 
   const top3 = board.slice(0, 3);
-  const rest = board.slice(3, board.length - 1);
-  const last = board[board.length - 1];
+  const showWoodenSpoon = board.length >= 4;
+  const rest = board.slice(3, showWoodenSpoon ? board.length - 1 : board.length);
+  const last = showWoodenSpoon ? board[board.length - 1] : null;
 
   return (
     <div>
@@ -1069,8 +1118,8 @@ function LeaderboardScreen({ board, isMobile }) {
         </div>
       ))}
 
-      {/* Cuillère */}
-      {last && board.length > 1 && (
+      {/* Cuillère en bois — uniquement à partir de 4 participants */}
+      {last && (
         <div style={{ background: "#0d1117", border: "1px solid #1f2937", borderRadius: 12, padding: "12px 16px", marginTop: 8, display: "flex", alignItems: "center", gap: 12, opacity: 0.55 }}>
           <Utensils size={20} color="#6b7280" />
           <div style={{ flex: 1 }}>
@@ -1195,7 +1244,6 @@ export default function App() {
 
   const { matches, loading, error }   = useMatches();
   const { pronostics, savePronostic } = usePronostics(participant?.id);
-  const board                         = useLeaderboard(matches);
   const { notifEnabled, notifLoading, toggle: toggleNotif } = useNotifications(participant, matches, pronostics);
 
   const liveCount     = matches.filter(m => m.status === "live").length;
@@ -1222,7 +1270,7 @@ export default function App() {
       case "pronos":      return <PronosScreen matches={matches} currentUser={participant.name} selectedMatchId={pronosFilterMatchId} onClearFilter={() => setPronosFilterMatchId(null)} isMobile={isMobile} />;
       case "groups":      return <GroupStandings matches={matches} isMobile={isMobile} />;
       case "bracket":     return <BracketScreen matches={matches} />;
-      case "leaderboard": return <LeaderboardScreen board={board} isMobile={isMobile} />;
+      case "leaderboard": return <LeaderboardScreen matches={matches} isMobile={isMobile} />;
       default:            return null;
     }
   };

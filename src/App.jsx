@@ -346,12 +346,22 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved]   = useState(false);
   const [, setTick]         = useState(0);
+  const [liveSec, setLiveSec] = useState(0);
 
+  // Tick chaque seconde pour le countdown (upcoming) ou le chrono live
   useEffect(() => {
-    if (match.status !== "upcoming") return;
-    const iv = setInterval(() => setTick(t => t + 1), 1000);
+    if (match.status !== "upcoming" && match.status !== "live") return;
+    const iv = setInterval(() => {
+      setTick(t => t + 1);
+      if (match.status === "live") setLiveSec(s => s + 1);
+    }, 1000);
     return () => clearInterval(iv);
   }, [match.status]);
+
+  // Resync : à chaque fois que l'API renvoie une nouvelle minute, reset des secondes
+  useEffect(() => {
+    if (match.status === "live") setLiveSec(0);
+  }, [match.minute, match.status]);
 
   useEffect(() => {
     if (pronostic) { setH(pronostic.home_score); setA(pronostic.away_score); }
@@ -421,29 +431,22 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
           ) : (
             <div style={{ fontSize: compact ? 18 : 22, color: "#4b5563", fontFamily: "monospace" }}>–</div>
           )}
-          {match.status === "live" && (
+          {match.status === "live" && match.minute !== null && match.minute !== undefined && (
             <div style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
+              display: "inline-block",
               marginTop: 6,
-              background: "#7f1d1d",
-              color: "#fecaca",
+              background: "#052e16",
+              color: "#4ade80",
               padding: "3px 10px",
-              borderRadius: 99,
-              fontSize: compact ? 11 : 12,
-              fontWeight: 800,
-              letterSpacing: 0.5,
-              fontFamily: "monospace",
+              borderRadius: 6,
+              fontSize: compact ? 12 : 14,
+              fontWeight: 700,
+              fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+              letterSpacing: 1,
             }}>
-              <span style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: "#f87171",
-                animation: "pulse 1s infinite",
-              }} />
-              {match.minute ? `${match.minute}'` : "LIVE"}
+              {String(match.minute + Math.floor(liveSec / 60)).padStart(2, "0")}
+              <span style={{ opacity: 0.6 }}>:</span>
+              {String(liveSec % 60).padStart(2, "0")}
             </div>
           )}
           {match.status === "upcoming" && timeUntil(match.kickoff) && (

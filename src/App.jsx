@@ -421,7 +421,31 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
           ) : (
             <div style={{ fontSize: compact ? 18 : 22, color: "#4b5563", fontFamily: "monospace" }}>–</div>
           )}
-          {match.status === "live" && <div style={{ fontSize: 10, color: "#f87171", fontWeight: 700 }}>{match.minute}'</div>}
+          {match.status === "live" && (
+            <div style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              marginTop: 6,
+              background: "#7f1d1d",
+              color: "#fecaca",
+              padding: "3px 10px",
+              borderRadius: 99,
+              fontSize: compact ? 11 : 12,
+              fontWeight: 800,
+              letterSpacing: 0.5,
+              fontFamily: "monospace",
+            }}>
+              <span style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "#f87171",
+                animation: "pulse 1s infinite",
+              }} />
+              {match.minute ? `${match.minute}'` : "LIVE"}
+            </div>
+          )}
           {match.status === "upcoming" && timeUntil(match.kickoff) && (
             <div style={{ fontSize: 10, color: "#d97706", fontWeight: 600, marginTop: 2 }}>{timeUntil(match.kickoff)}</div>
           )}

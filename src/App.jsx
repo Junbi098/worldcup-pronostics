@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Tv2, Eye, BarChart2, Trophy, Swords, Bell, User, LogOut,
   CheckCircle2, Radio, Clock, ChevronRight, Lock, AlertTriangle,
-  Calendar, TrendingUp, Utensils, Medal, Award
+  Calendar, TrendingUp, Utensils, Medal, Award, X,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { computePoints } from "./points";
@@ -76,10 +76,14 @@ function stageLabel(stage) {
   return map[stage] || stage || "";
 }
 
-// GROUP_E → "Groupe E"
 function groupLabel(group) {
   if (!group) return "";
   return group.replace(/^GROUP[_-]?/i, "Groupe ");
+}
+
+function teamCode(team) {
+  if (!team) return "TBD";
+  return team.tla || team.shortName?.slice(0, 3).toUpperCase() || "TBD";
 }
 
 async function hashPassword(password) {
@@ -197,15 +201,13 @@ function usePronostics(participantId) {
   return { pronostics, savePronostic };
 }
 
-// Récupère les données brutes participants + pronostics
-// La logique de calcul est faite dans LeaderboardScreen avec un useMemo
 function useLeaderboardData() {
   const [data, setData] = useState({ participants: [], allPronostics: [] });
 
   const refresh = useCallback(async () => {
     const [{ data: parts }, { data: pronos }] = await Promise.all([
       supabase.from("participants").select("id, name"),
-      supabase.from("pronostics").select("participant_id, match_id, home_score, away_score"),
+      supabase.from("pronostics").select("participant_id, match_id, home_score, away_score, updated_at"),
     ]);
     setData({ participants: parts || [], allPronostics: pronos || [] });
   }, []);
@@ -229,7 +231,6 @@ function useNotifications(participant, matches, pronostics) {
     check();
   }, []);
 
-  // Nettoyer les clés notif_sent des matchs terminés
   useEffect(() => {
     matches.filter(m => m.status === "finished").forEach(m => {
       localStorage.removeItem(`notif_sent_${m.id}`);
@@ -348,7 +349,6 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
   const [, setTick]         = useState(0);
   const [liveSec, setLiveSec] = useState(0);
 
-  // Tick chaque seconde pour le countdown (upcoming) ou le chrono live
   useEffect(() => {
     if (match.status !== "upcoming" && match.status !== "live") return;
     const iv = setInterval(() => {
@@ -358,7 +358,6 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
     return () => clearInterval(iv);
   }, [match.status]);
 
-  // Resync : à chaque fois que l'API renvoie une nouvelle minute, reset des secondes
   useEffect(() => {
     if (match.status === "live") setLiveSec(0);
   }, [match.minute, match.status]);
@@ -367,7 +366,7 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
     if (pronostic) { setH(pronostic.home_score); setA(pronostic.away_score); }
   }, [pronostic]);
 
-  const pts   = match.status === "finished" && pronostic && match.score
+  const pts = match.status === "finished" && pronostic && match.score
     ? computePoints(pronostic, match.score) : null;
 
   const handleSave = async () => {
@@ -378,7 +377,7 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
     if (ok) { setSaved(true); setTimeout(() => setSaved(false), 2000); }
   };
 
-  const canSave    = h !== "" && a !== "" && !isNaN(+h) && !isNaN(+a) && +h >= 0 && +a >= 0 && !locked;
+  const canSave = h !== "" && a !== "" && !isNaN(+h) && !isNaN(+a) && +h >= 0 && +a >= 0 && !locked;
   const missingProno = match.status === "upcoming" && !kickedOff && !pronostic;
 
   return (
@@ -392,7 +391,6 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
       marginBottom: 0,
       boxShadow: match.status === "live" ? "0 0 18px rgba(248,113,113,.12)" : "none",
     }}>
-      {/* Top */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <span style={{ fontSize: 10, color: "#4b5563", textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
           {isGroupStage(match.stage) ? groupLabel(match.group) : stageLabel(match.stage)}
@@ -412,7 +410,6 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
         </div>
       </div>
 
-      {/* Teams + score */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ flex: 1, textAlign: "right" }}>
           {match.home.crest
@@ -470,7 +467,6 @@ function MatchCard({ match, pronostic, onSave, onViewPronos, compact }) {
         </div>
       )}
 
-      {/* Bottom */}
       <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #1f2937", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, color: "#6b7280" }}>Mon prono :</span>
@@ -530,7 +526,7 @@ const MATCHES_STAGE_MAP = {
   "8èmes":  "LAST_16",
   "Quarts": "QUARTER_FINALS",
   "Demis":  "SEMI_FINALS",
-  "Finale": "FINAL", // gère aussi THIRD_PLACE
+  "Finale": "FINAL",
 };
 
 function MatchesScreen({ matches, pronostics, onSave, onViewPronos, loading, error, isMobile }) {
@@ -654,11 +650,9 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
     if (filter === "J2") return m.matchday === 2;
     if (filter === "J3") return m.matchday === 3;
     if (filter === "Phase finale") return !isGroupStage(m.stage);
-    return true; // "Tous"
+    return true;
   };
 
-  // Affiche tous les matchs (plus de filtre "au moins 1 prono")
-  // Tri : live d'abord, puis upcoming (ASCENDANT — prochain en haut), puis finished (DESCENDANT — récent en haut)
   const relevantMatches = matches
     .filter(filterMatch)
     .sort((a, b) => {
@@ -752,7 +746,6 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
     <div>
       <FilterBar options={filters} active={filter} onChange={f => { setFilter(f); setSelectedMatch(null); onClearFilter?.(); }} />
 
-      {/* Filtre par match */}
       {relevantMatches.length > 0 && (
         <div style={{ overflowX: "auto", paddingBottom: 8, marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 6, minWidth: "max-content" }}>
@@ -776,7 +769,6 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
         </div>
       )}
 
-      {/* En cours */}
       {active.filter(m => m.status === "live").map(m => (
         <div key={m.id} style={{ marginBottom: 24 }}>
           <SectionTitle icon={Radio} label="En direct" color="#f87171" />
@@ -803,7 +795,6 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
         </div>
       ))}
 
-      {/* À venir — affichage en bloc UpcomingBlock */}
       {active.filter(m => m.status === "upcoming").length > 0 && (
         <div style={{ marginBottom: 24 }}>
           <SectionTitle icon={Clock} label="À venir" count={active.filter(m => m.status === "upcoming").length} />
@@ -811,7 +802,6 @@ function PronosScreen({ matches, currentUser, selectedMatchId, onClearFilter, is
         </div>
       )}
 
-      {/* Terminés */}
       {active.filter(m => m.status === "finished").map(m => (
         <div key={m.id} style={{ marginBottom: 24 }}>
           <div style={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 12, padding: "12px 16px", marginBottom: 8 }}>
@@ -937,22 +927,113 @@ function GroupStandings({ matches, isMobile }) {
   );
 }
 
-// ─── BRACKET ─────────────────────────────────────────────────────────────────
+// ─── BRACKET (style SoFoot) ──────────────────────────────────────────────────
 
 const KNOCKOUT_ORDER = ["LAST_32","LAST_16","QUARTER_FINALS","SEMI_FINALS","THIRD_PLACE","FINAL"];
 
-const BRACKET_STAGE_MAP = {
-  "16èmes": "LAST_32",
-  "8èmes":  "LAST_16",
-  "Quarts": "QUARTER_FINALS",
-  "Demis":  "SEMI_FINALS",
-  "Finale": "FINAL",
-};
+function BracketCard({ match, pronostic, side, big }) {
+  if (!match) return (
+    <div style={{
+      background: "#0a0f1a", border: "1px dashed #1f2937",
+      borderRadius: 5, padding: "8px 7px", minHeight: 46,
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      <span style={{ fontSize: 10, color: "#4b5563", fontStyle: "italic" }}>—</span>
+    </div>
+  );
 
-function BracketScreen({ matches }) {
-  const [filter, setFilter] = useState("Tous");
-  const stageFilters = ["Tous","16èmes","8èmes","Quarts","Demis","Finale"];
+  const isLive = match.status === "live";
+  const isFinished = match.status === "finished";
+  const isTBD = match.home.name === "À déterminer" || match.away.name === "À déterminer";
+  const pts = isFinished && pronostic && match.score ? computePoints(pronostic, match.score) : null;
+  const homeWins = isFinished && match.score && match.score.home > match.score.away;
+  const awayWins = isFinished && match.score && match.score.away > match.score.home;
+  const draw = isFinished && match.score && match.score.home === match.score.away;
 
+  const TeamLine = ({ team, score, isWinner }) => (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      flexDirection: side === "right" ? "row-reverse" : "row",
+      minHeight: 16,
+    }}>
+      {team.crest
+        ? <img src={team.crest} alt="" style={{ width: big ? 14 : 12, height: big ? 14 : 12, objectFit: "contain", flexShrink: 0 }} />
+        : <span style={{ width: big ? 14 : 12, height: big ? 14 : 12, background: "#1f2937", borderRadius: 2, flexShrink: 0 }} />}
+      <span style={{
+        flex: 1,
+        textAlign: side === "right" ? "right" : "left",
+        fontSize: big ? 11 : 10,
+        fontWeight: isWinner ? 800 : 600,
+        color: isWinner ? "#fbbf24" : draw ? "#e5e7eb" : isFinished && !isWinner ? "#6b7280" : "#e5e7eb",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        letterSpacing: 0.3,
+      }}>
+        {teamCode(team)}
+      </span>
+      {score !== null && score !== undefined && (
+        <span style={{
+          fontSize: big ? 12 : 11,
+          fontWeight: 800,
+          color: isWinner ? "#fbbf24" : "#9ca3af",
+          fontFamily: "monospace",
+          minWidth: 10,
+          textAlign: "center",
+        }}>
+          {score}
+        </span>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{
+      background: isLive ? "#1a0a0d" : big ? "linear-gradient(180deg,#1a1100,#0d0900)" : "#0f1623",
+      border: `1px solid ${isLive ? "#7f1d1d" : big ? "#d97706" : isTBD ? "rgba(31,41,55,0.5)" : "#1f2937"}`,
+      borderRadius: big ? 8 : 5,
+      borderStyle: isTBD ? "dashed" : "solid",
+      padding: big ? "8px 10px" : "5px 7px",
+      position: "relative",
+      borderLeft: side === "right" && !big ? `2px solid #d97706` : undefined,
+      borderRight: side === "left" && !big ? `2px solid #d97706` : undefined,
+      boxShadow: big ? "0 0 20px rgba(217,119,6,0.15)" : "none",
+    }}>
+      {isTBD ? (
+        <div style={{ fontSize: 9, color: "#4b5563", fontStyle: "italic", textAlign: "center", padding: "8px 0" }}>
+          À déterminer
+        </div>
+      ) : (
+        <>
+          <TeamLine team={match.home} score={match.score?.home} isWinner={homeWins} />
+          <div style={{ height: 1, background: "#1f2937", margin: "3px 0" }} />
+          <TeamLine team={match.away} score={match.score?.away} isWinner={awayWins} />
+        </>
+      )}
+      {isLive && (
+        <span style={{
+          position: "absolute", top: -7, left: 5,
+          fontSize: 8, background: "#7f1d1d", color: "#fca5a5",
+          padding: "1px 5px", borderRadius: 3, fontWeight: 800, letterSpacing: 0.5,
+        }}>LIVE</span>
+      )}
+      {pronostic && (
+        <span style={{
+          position: "absolute", top: -5, right: 4,
+          fontSize: 8, fontWeight: 800, color: "#fff",
+          background: pts === 3 ? "#16a34a" : pts === 1 ? "#d97706" : pts === 0 ? "#4b5563" : "#d97706",
+          padding: "1px 5px", borderRadius: 99, letterSpacing: 0.3,
+        }} title={`Ton prono : ${pronostic.home_score}-${pronostic.away_score}`}>
+          {pts === null ? "PRONO" : `+${pts}`}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function BracketScreen({ matches, pronostics }) {
   const knockout = matches.filter(m => !isGroupStage(m.stage) && m.stage);
   if (!knockout.length) return (
     <div style={{ color: "#4b5563", textAlign: "center", padding: 40, fontSize: 14 }}>
@@ -966,71 +1047,314 @@ function BracketScreen({ matches }) {
       .filter(m => m.stage === s)
       .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
   });
-  const stages = KNOCKOUT_ORDER.filter(s => byStage[s]?.length > 0);
-  const visibleStages = filter === "Tous"
-    ? stages
-    : stages.filter(s => s === BRACKET_STAGE_MAP[filter] || (filter === "Finale" && s === "THIRD_PLACE"));
+
+  const finalMatch = byStage.FINAL[0];
+  const thirdPlace = byStage.THIRD_PLACE[0];
+
+  // Champion prédit (à partir du prono de l'utilisateur sur la finale)
+  const finalProno = finalMatch && pronostics[finalMatch.id];
+  let predictedChampion = null;
+  if (finalMatch && finalProno) {
+    if (+finalProno.home_score > +finalProno.away_score) predictedChampion = finalMatch.home;
+    else if (+finalProno.away_score > +finalProno.home_score) predictedChampion = finalMatch.away;
+  }
+
+  // Partage gauche/droite pour la mise en bracket
+  const splitHalves = (arr) => {
+    const half = Math.ceil(arr.length / 2);
+    return [arr.slice(0, half), arr.slice(half)];
+  };
+  const [r16Left, r16Right] = splitHalves(byStage.LAST_16);
+  const [qfLeft, qfRight]   = splitHalves(byStage.QUARTER_FINALS);
+  const sfLeft  = byStage.SEMI_FINALS[0];
+  const sfRight = byStage.SEMI_FINALS[1];
+
+  const colStyle = { display: "flex", flexDirection: "column", justifyContent: "space-around", gap: 4 };
+  const centerColStyle = { display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 10 };
 
   return (
     <div>
-      <FilterBar options={stageFilters} active={filter} onChange={setFilter} />
-      <div style={{ overflowX: "auto", paddingBottom: 16 }}>
-        <div style={{ display: "flex", gap: 20, minWidth: "max-content", alignItems: "flex-start" }}>
-          {visibleStages.map(stage => (
-            <div key={stage} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ color: "#d97706", fontWeight: 800, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4, textAlign: "center" }}>
-                {stageLabel(stage)}
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {byStage[stage].map(m => {
-                  const finished = m.status === "finished";
-                  const live = m.status === "live";
-                  return (
-                    <div key={m.id} style={{
-                      background: "linear-gradient(135deg,#111827,#1a1f2e)",
-                      border: `1px solid ${live ? "#7f1d1d" : "#374151"}`,
-                      borderRadius: 10, padding: "10px 12px", minWidth: 200,
-                      boxShadow: live ? "0 0 12px rgba(248,113,113,.15)" : "none",
-                    }}>
-                      {[{ team: m.home, score: m.score?.home }, { team: m.away, score: m.score?.away }].map((row, i) => {
-                        const winner = finished && m.score && (
-                          (i === 0 && m.score.home > m.score.away) ||
-                          (i === 1 && m.score.away > m.score.home)
-                        );
-                        return (
-                          <div key={i} style={{
-                            display: "flex", alignItems: "center", justifyContent: "space-between",
-                            padding: "4px 0", borderBottom: i === 0 ? "1px solid #1f2937" : "none",
-                          }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              {row.team.crest
-                                ? <img src={row.team.crest} alt="" style={{ width: 18, height: 18, objectFit: "contain" }} />
-                                : <span>🏳️</span>}
-                              <span style={{ fontSize: 12, fontWeight: winner ? 800 : 500, color: winner ? "#fbbf24" : "#e5e7eb" }}>
-                                {row.team.shortName || row.team.name}
-                              </span>
-                            </div>
-                            <span style={{ fontSize: 14, fontWeight: 800, color: winner ? "#fbbf24" : "#6b7280", fontFamily: "monospace", marginLeft: 10 }}>
-                              {row.score ?? (live ? "–" : "")}
-                            </span>
-                          </div>
-                        );
-                      })}
-                      {live && (
-                        <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 4 }}>
-                          <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#f87171", animation: "pulse 1s infinite" }} />
-                          <span style={{ fontSize: 10, color: "#f87171", fontWeight: 700 }}>LIVE {m.minute}'</span>
-                        </div>
-                      )}
-                      {!live && !finished && (
-                        <div style={{ marginTop: 4, fontSize: 10, color: "#6b7280" }}>{formatDate(m.kickoff)}</div>
-                      )}
+      {/* Champion prédit */}
+      <div style={{ textAlign: "center", marginBottom: 18 }}>
+        <div style={{ fontSize: 10, letterSpacing: 2.5, textTransform: "uppercase", color: "#d97706", fontWeight: 800, marginBottom: 6 }}>
+          Mon vainqueur prédit
+        </div>
+        <div style={{
+          display: "inline-flex", alignItems: "center", gap: 10,
+          background: "linear-gradient(180deg,#1a1100,#0d0900)",
+          border: "1px solid #d97706", borderRadius: 8,
+          padding: "10px 22px",
+          boxShadow: "0 0 24px rgba(217,119,6,0.15)",
+        }}>
+          <Trophy size={18} color="#fbbf24" />
+          {predictedChampion ? (
+            <>
+              {predictedChampion.crest && (
+                <img src={predictedChampion.crest} alt="" style={{ width: 22, height: 22, objectFit: "contain" }} />
+              )}
+              <span style={{ fontWeight: 800, fontSize: 15, color: "#fbbf24", letterSpacing: 0.3 }}>
+                {predictedChampion.name?.toUpperCase()}
+              </span>
+            </>
+          ) : (
+            <span style={{ color: "#6b7280", fontStyle: "italic", fontSize: 13 }}>
+              {finalMatch ? "Pronostique la finale pour voir ton vainqueur" : "À déterminer"}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* R32 en strip horizontal si la phase commence */}
+      {byStage.LAST_32.length > 0 && (
+        <div style={{ marginBottom: 22 }}>
+          <SectionTitle icon={Swords} label="16èmes de finale" color="#a78bfa" count={byStage.LAST_32.length} />
+          <div style={{ overflowX: "auto", paddingBottom: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${byStage.LAST_32.length}, minmax(120px,1fr))`, gap: 6, minWidth: byStage.LAST_32.length * 130 }}>
+              {byStage.LAST_32.map(m => (
+                <BracketCard key={m.id} match={m} pronostic={pronostics[m.id]} side="left" />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bracket centré : 8èmes → Finale → 8èmes */}
+      <div style={{ marginBottom: 18 }}>
+        <SectionTitle icon={Trophy} label="Tableau final" color="#d97706" />
+        <div style={{ overflowX: "auto" }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 0.85fr 0.7fr 1.3fr 0.7fr 0.85fr 1fr",
+            gap: 4, alignItems: "stretch",
+            minHeight: 380,
+            minWidth: 720,
+          }}>
+            {/* 8èmes gauche */}
+            <div style={colStyle}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: "#4b5563", fontWeight: 700, textAlign: "center", marginBottom: 4 }}>8èmes</div>
+              {r16Left.map(m => <BracketCard key={m.id} match={m} pronostic={pronostics[m.id]} side="left" />)}
+              {/* Pad if less than 4 */}
+              {Array.from({ length: Math.max(0, 4 - r16Left.length) }).map((_, i) => <BracketCard key={`pad-l16-${i}`} match={null} side="left" />)}
+            </div>
+            {/* Quarts gauche */}
+            <div style={colStyle}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: "#4b5563", fontWeight: 700, textAlign: "center", marginBottom: 4 }}>Quarts</div>
+              {qfLeft.map(m => <BracketCard key={m.id} match={m} pronostic={pronostics[m.id]} side="left" />)}
+              {Array.from({ length: Math.max(0, 2 - qfLeft.length) }).map((_, i) => <BracketCard key={`pad-qfl-${i}`} match={null} side="left" />)}
+            </div>
+            {/* Demi gauche */}
+            <div style={{ ...colStyle, justifyContent: "center" }}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: "#4b5563", fontWeight: 700, textAlign: "center", marginBottom: 4 }}>Demi</div>
+              <BracketCard match={sfLeft} pronostic={sfLeft && pronostics[sfLeft.id]} side="left" />
+            </div>
+            {/* Centre : trophée + finale */}
+            <div style={centerColStyle}>
+              <Trophy size={30} color="#fbbf24" />
+              <div style={{ width: "100%" }}>
+                {finalMatch ? (
+                  <div style={{
+                    background: "linear-gradient(180deg,#1a1100,#0d0900)",
+                    border: "2px solid #d97706",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    boxShadow: "0 0 24px rgba(217,119,6,0.15)",
+                  }}>
+                    <div style={{ fontSize: 9, letterSpacing: 2.5, textTransform: "uppercase", color: "#d97706", fontWeight: 800, textAlign: "center", marginBottom: 8 }}>
+                      Finale
                     </div>
-                  );
-                })}
+                    <BracketCard match={finalMatch} pronostic={pronostics[finalMatch.id]} side="left" big />
+                    <div style={{ fontSize: 9, color: "#6b7280", marginTop: 6, textAlign: "center", letterSpacing: 0.5 }}>
+                      {formatDate(finalMatch.kickoff)}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ textAlign: "center", color: "#4b5563", fontSize: 11, fontStyle: "italic", padding: 20 }}>
+                    Finale à venir
+                  </div>
+                )}
               </div>
             </div>
-          ))}
+            {/* Demi droite */}
+            <div style={{ ...colStyle, justifyContent: "center" }}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: "#4b5563", fontWeight: 700, textAlign: "center", marginBottom: 4 }}>Demi</div>
+              <BracketCard match={sfRight} pronostic={sfRight && pronostics[sfRight.id]} side="right" />
+            </div>
+            {/* Quarts droite */}
+            <div style={colStyle}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: "#4b5563", fontWeight: 700, textAlign: "center", marginBottom: 4 }}>Quarts</div>
+              {qfRight.map(m => <BracketCard key={m.id} match={m} pronostic={pronostics[m.id]} side="right" />)}
+              {Array.from({ length: Math.max(0, 2 - qfRight.length) }).map((_, i) => <BracketCard key={`pad-qfr-${i}`} match={null} side="right" />)}
+            </div>
+            {/* 8èmes droite */}
+            <div style={colStyle}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", color: "#4b5563", fontWeight: 700, textAlign: "center", marginBottom: 4 }}>8èmes</div>
+              {r16Right.map(m => <BracketCard key={m.id} match={m} pronostic={pronostics[m.id]} side="right" />)}
+              {Array.from({ length: Math.max(0, 4 - r16Right.length) }).map((_, i) => <BracketCard key={`pad-r16r-${i}`} match={null} side="right" />)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 3ème place */}
+      {thirdPlace && (
+        <div style={{
+          marginTop: 16, textAlign: "center",
+          paddingTop: 16, borderTop: "1px dashed #1f2937",
+        }}>
+          <div style={{ fontSize: 9, letterSpacing: 2.5, textTransform: "uppercase", color: "#9ca3af", fontWeight: 700, marginBottom: 8 }}>
+            Match pour la 3ème place
+          </div>
+          <div style={{ display: "inline-block", minWidth: 200 }}>
+            <BracketCard match={thirdPlace} pronostic={pronostics[thirdPlace.id]} side="left" />
+            <div style={{ fontSize: 10, color: "#4b5563", marginTop: 4, letterSpacing: 0.3 }}>
+              {formatDate(thirdPlace.kickoff)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── PARTICIPANT PRONOS MODAL ────────────────────────────────────────────────
+
+function ParticipantPronosModal({ participant, matches, allPronostics, onClose }) {
+  if (!participant) return null;
+
+  const myPronos = allPronostics.filter(p => p.participant_id === participant.id);
+  const pronoMap = new Map(myPronos.map(p => [p.match_id, p]));
+  const finishedIds = new Set(matches.filter(m => m.status === "finished").map(m => m.id));
+
+  let total = 0, exact = 0, trend = 0, missed = 0;
+  myPronos.forEach(p => {
+    if (!finishedIds.has(p.match_id)) return;
+    const match = matches.find(m => m.id === p.match_id);
+    if (!match?.score) return;
+    const pts = computePoints(p, match.score);
+    total += pts;
+    if (pts === 3) exact++;
+    else if (pts === 1) trend++;
+    else missed++;
+  });
+
+  const matchesWithPronos = matches
+    .filter(m => pronoMap.has(m.id))
+    .sort((a, b) => {
+      const order = { finished: 0, live: 1, upcoming: 2 };
+      if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+      return new Date(b.kickoff) - new Date(a.kickoff);
+    });
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)",
+      zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 16,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "#0d1117",
+        borderRadius: 14,
+        maxWidth: 680, width: "100%",
+        maxHeight: "90vh", overflow: "hidden",
+        border: "1px solid #1f2937",
+        display: "flex", flexDirection: "column",
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: "18px 22px", borderBottom: "1px solid #1f2937",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 900, color: "#f9fafb", letterSpacing: -0.3 }}>{participant.name}</div>
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <span><b style={{ color: "#f9fafb" }}>{total}</b> pts au total</span>
+              <span style={{ color: "#374151" }}>·</span>
+              <span style={{ color: "#22c55e" }}>{exact} exact{exact > 1 ? "s" : ""}</span>
+              <span style={{ color: "#374151" }}>·</span>
+              <span style={{ color: "#f59e0b" }}>{trend} tendance{trend > 1 ? "s" : ""}</span>
+              <span style={{ color: "#374151" }}>·</span>
+              <span style={{ color: "#6b7280" }}>{missed} raté{missed > 1 ? "s" : ""}</span>
+              <span style={{ color: "#374151" }}>·</span>
+              <span>{myPronos.length} prono{myPronos.length > 1 ? "s" : ""}</span>
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            background: "#1f2937", border: "none", color: "#9ca3af",
+            borderRadius: 8, padding: "8px 10px", cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "14px 22px 20px" }}>
+          {matchesWithPronos.length === 0 ? (
+            <div style={{ color: "#6b7280", textAlign: "center", padding: 40, fontSize: 13 }}>
+              Aucun pronostic enregistré
+            </div>
+          ) : (
+            matchesWithPronos.map(m => {
+              const prono = pronoMap.get(m.id);
+              const pts = m.status === "finished" && m.score ? computePoints(prono, m.score) : null;
+              return (
+                <div key={m.id} style={{
+                  background: "#111827", border: "1px solid #1f2937",
+                  borderRadius: 10, padding: "10px 14px", marginBottom: 8,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 10, color: "#4b5563", textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
+                      {isGroupStage(m.stage) ? groupLabel(m.group) : stageLabel(m.stage)}
+                      {m.matchday && isGroupStage(m.stage) ? ` · J${m.matchday}` : ""}
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <StatusBadge status={m.status} minute={m.minute} />
+                    {m.status === "upcoming" && (
+                      <span style={{ fontSize: 10, color: "#6b7280" }}>{formatDate(m.kickoff)}</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ flex: 1, textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb" }}>
+                        {m.home.shortName || m.home.name}
+                      </span>
+                      {m.home.crest && <img src={m.home.crest} alt="" style={{ width: 18, height: 18, objectFit: "contain" }} />}
+                    </div>
+                    <div style={{ textAlign: "center", minWidth: 90 }}>
+                      {m.score ? (
+                        <span style={{ fontSize: 18, fontWeight: 900, color: "#f9fafb", fontFamily: "monospace" }}>
+                          {m.score.home} – {m.score.away}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 14, color: "#4b5563", fontFamily: "monospace" }}>vs</span>
+                      )}
+                    </div>
+                    <div style={{ flex: 1, textAlign: "left", display: "flex", alignItems: "center", gap: 6 }}>
+                      {m.away.crest && <img src={m.away.crest} alt="" style={{ width: 18, height: 18, objectFit: "contain" }} />}
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb" }}>
+                        {m.away.shortName || m.away.name}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{
+                    marginTop: 8, paddingTop: 8, borderTop: "1px solid #1f2937",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap",
+                  }}>
+                    <span style={{ fontSize: 11, color: "#6b7280" }}>Son prono :</span>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: "#e5e7eb", fontFamily: "monospace" }}>
+                      {prono.home_score} – {prono.away_score}
+                    </span>
+                    {pts !== null && <ScoreTag pts={pts} />}
+                    {prono.updated_at && (
+                      <span style={{ fontSize: 10, color: "#4b5563", display: "flex", alignItems: "center", gap: 3 }}>
+                        <Clock size={9} /> {formatPronoTime(prono.updated_at)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>
@@ -1041,13 +1365,13 @@ function BracketScreen({ matches }) {
 
 function LeaderboardScreen({ matches, isMobile }) {
   const [filter, setFilter] = useState("Global");
+  const [selectedId, setSelectedId] = useState(null);
   const filters = ["Global","J1","J2","J3","Phase finale"];
   const medals = [Trophy, Award, Medal];
   const medalColors = ["#fbbf24","#9ca3af","#d97706"];
 
   const { participants, allPronostics } = useLeaderboardData();
 
-  // Calcul du classement, filtré selon le segment choisi
   const board = useMemo(() => {
     let finished = matches.filter(m => m.status === "finished");
     if (filter === "J1") finished = finished.filter(m => m.matchday === 1 && isGroupStage(m.stage));
@@ -1071,9 +1395,13 @@ function LeaderboardScreen({ matches, isMobile }) {
         if (pts === 3) exact++;
         else if (pts === 1) trend++;
       });
-      return { name: p.name, total, exact, trend };
+      return { id: p.id, name: p.name, total, exact, trend };
     }).sort((a, b) => b.total - a.total || b.exact - a.exact || b.trend - a.trend);
   }, [matches, filter, participants, allPronostics]);
+
+  const selectedParticipant = selectedId
+    ? participants.find(p => p.id === selectedId)
+    : null;
 
   if (!board.length) return (
     <div>
@@ -1091,11 +1419,16 @@ function LeaderboardScreen({ matches, isMobile }) {
   const rest = board.slice(3, showWoodenSpoon ? board.length - 1 : board.length);
   const last = showWoodenSpoon ? board[board.length - 1] : null;
 
+  const clickable = { cursor: "pointer", transition: "transform .12s, box-shadow .12s" };
+
   return (
     <div>
       <FilterBar options={filters} active={filter} onChange={setFilter} />
 
-      {/* Podium */}
+      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 12, fontStyle: "italic" }}>
+        Astuce : clique sur un participant pour voir tous ses pronostics
+      </div>
+
       <div style={{ display: "flex", gap: 8, marginBottom: 20, alignItems: "flex-end" }}>
         {[1, 0, 2].map(idx => {
           if (!top3[idx]) return null;
@@ -1103,13 +1436,14 @@ function LeaderboardScreen({ matches, isMobile }) {
           const isFirst = idx === 0;
           const MedalIcon = medals[idx];
           return (
-            <div key={p.name} style={{
+            <div key={p.id} onClick={() => setSelectedId(p.id)} style={{
               flex: 1, textAlign: "center",
               background: isFirst ? "linear-gradient(135deg,#1c1400,#2d2000)" : "#111827",
               border: `1px solid ${isFirst ? "#d97706" : "#1f2937"}`,
               borderRadius: 12,
               padding: isFirst ? "18px 10px" : "14px 10px",
               boxShadow: isFirst ? "0 0 24px rgba(217,119,6,.2)" : "none",
+              ...clickable,
             }}>
               <MedalIcon size={isFirst ? 28 : 22} color={medalColors[idx]} style={{ margin: "0 auto 6px" }} />
               <div style={{ fontWeight: 800, color: isFirst ? "#fbbf24" : "#e5e7eb", fontSize: isFirst ? 14 : 12 }}>{p.name}</div>
@@ -1124,12 +1458,12 @@ function LeaderboardScreen({ matches, isMobile }) {
         })}
       </div>
 
-      {/* Reste */}
       {rest.map((p, i) => (
-        <div key={p.name} style={{
+        <div key={p.id} onClick={() => setSelectedId(p.id)} style={{
           background: "#111827", border: "1px solid #1f2937",
           borderRadius: 12, padding: "12px 16px", marginBottom: 8,
           display: "flex", alignItems: "center", gap: 12,
+          ...clickable,
         }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", minWidth: 28, textAlign: "center" }}>#{i + 4}</div>
           <div style={{ flex: 1 }}>
@@ -1145,9 +1479,13 @@ function LeaderboardScreen({ matches, isMobile }) {
         </div>
       ))}
 
-      {/* Cuillère en bois — uniquement à partir de 4 participants */}
       {last && (
-        <div style={{ background: "#0d1117", border: "1px solid #1f2937", borderRadius: 12, padding: "12px 16px", marginTop: 8, display: "flex", alignItems: "center", gap: 12, opacity: 0.55 }}>
+        <div onClick={() => setSelectedId(last.id)} style={{
+          background: "#0d1117", border: "1px solid #1f2937", borderRadius: 12,
+          padding: "12px 16px", marginTop: 8,
+          display: "flex", alignItems: "center", gap: 12, opacity: 0.65,
+          ...clickable,
+        }}>
           <Utensils size={20} color="#6b7280" />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, color: "#6b7280", fontSize: 14 }}>{last.name}</div>
@@ -1158,6 +1496,13 @@ function LeaderboardScreen({ matches, isMobile }) {
           </div>
         </div>
       )}
+
+      <ParticipantPronosModal
+        participant={selectedParticipant}
+        matches={matches}
+        allPronostics={allPronostics}
+        onClose={() => setSelectedId(null)}
+      />
     </div>
   );
 }
@@ -1296,7 +1641,7 @@ export default function App() {
       case "matches":     return <MatchesScreen matches={matches} pronostics={pronostics} onSave={savePronostic} onViewPronos={handleViewPronos} loading={loading} error={error} isMobile={isMobile} />;
       case "pronos":      return <PronosScreen matches={matches} currentUser={participant.name} selectedMatchId={pronosFilterMatchId} onClearFilter={() => setPronosFilterMatchId(null)} isMobile={isMobile} />;
       case "groups":      return <GroupStandings matches={matches} isMobile={isMobile} />;
-      case "bracket":     return <BracketScreen matches={matches} />;
+      case "bracket":     return <BracketScreen matches={matches} pronostics={pronostics} />;
       case "leaderboard": return <LeaderboardScreen matches={matches} isMobile={isMobile} />;
       default:            return null;
     }
@@ -1307,9 +1652,7 @@ export default function App() {
     <div style={{ display: "flex", height: "100vh", background: "#030712", fontFamily: "'Segoe UI',system-ui,sans-serif", color: "#f9fafb" }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}} input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none} *{box-sizing:border-box} ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:#030712} ::-webkit-scrollbar-thumb{background:#374151;border-radius:99px}`}</style>
 
-      {/* Sidebar */}
       <div style={{ width: 240, background: "#0d1117", borderRight: "1px solid #1f2937", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        {/* Logo */}
         <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #1f2937" }}>
           <div style={{ fontSize: 10, color: "#d97706", fontWeight: 800, letterSpacing: 3, textTransform: "uppercase", marginBottom: 2 }}>Moses Consulting</div>
           <div style={{ fontWeight: 900, fontSize: 16, color: "#f9fafb", letterSpacing: -0.5 }}>Pronostics</div>
@@ -1320,7 +1663,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Nav */}
         <div style={{ flex: 1, padding: "12px 10px" }}>
           {NAV.map(({ k, Icon, label }) => (
             <button key={k} onClick={() => setTab(k)} style={{
@@ -1339,7 +1681,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* User section */}
         <div style={{ padding: "12px 10px", borderTop: "1px solid #1f2937" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#111827", borderRadius: 10, marginBottom: 8 }}>
             <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#2d1d00", border: "1px solid #d9770644", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -1374,9 +1715,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        {/* Topbar */}
         <div style={{ padding: "16px 28px", borderBottom: "1px solid #1f2937", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#030712" }}>
           <div>
             <div style={{ fontWeight: 900, fontSize: 20, color: "#f9fafb" }}>
@@ -1385,12 +1724,10 @@ export default function App() {
           </div>
         </div>
 
-        {/* Content */}
         <div style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
           {renderScreen()}
         </div>
 
-        {/* Legend */}
         <div style={{ padding: "10px 28px", borderTop: "1px solid #1f2937", display: "flex", gap: 24, background: "#0d1117" }}>
           {[{ pts: 3, label: "Score exact", color: "#22c55e" }, { pts: 1, label: "Bonne tendance", color: "#f59e0b" }, { pts: 0, label: "Raté", color: "#6b7280" }].map(r => (
             <div key={r.pts} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
@@ -1408,7 +1745,6 @@ export default function App() {
     <div style={{ minHeight: "100vh", background: "#030712", fontFamily: "'Segoe UI',system-ui,sans-serif", color: "#f9fafb", paddingBottom: 64 }}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}} input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none} *{box-sizing:border-box} ::-webkit-scrollbar{display:none}`}</style>
 
-      {/* Header */}
       <div style={{ background: "#030712", borderBottom: "1px solid #111827", padding: "10px 16px", position: "sticky", top: 0, zIndex: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ fontSize: 9, color: "#d97706", fontWeight: 800, letterSpacing: 2, textTransform: "uppercase" }}>Moses Consulting</div>
@@ -1438,12 +1774,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* Content */}
       <div style={{ padding: "16px 14px" }}>
         {renderScreen()}
       </div>
 
-      {/* Bottom nav */}
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#0d1117", borderTop: "1px solid #1f2937", display: "flex", zIndex: 20, paddingBottom: "env(safe-area-inset-bottom)" }}>
         {NAV.map(({ k, Icon, label }) => (
           <button key={k} onClick={() => setTab(k)} style={{

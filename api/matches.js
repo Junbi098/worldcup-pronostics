@@ -29,20 +29,21 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    // Normalisation des matchs pour le frontend
     const matches = (data.matches || []).map((m) => ({
       id: m.id,
-      stage: m.stage || null,           // GROUP_STAGE | LAST_32 | LAST_16 | QUARTER_FINALS | SEMI_FINALS | THIRD_PLACE | FINAL
-      group: m.group || null,           // GROUP_A...GROUP_L ou null pour knockout
-      matchday: m.matchday || null,     // 1, 2, 3 pour phase de poules, null pour knockout
+      stage: m.stage || null,
+      group: m.group || null,
+      matchday: m.matchday || null,
       home: {
         name: m.homeTeam?.name || "À déterminer",
         shortName: m.homeTeam?.shortName || "TBD",
+        tla: m.homeTeam?.tla || null,
         crest: m.homeTeam?.crest || null,
       },
       away: {
         name: m.awayTeam?.name || "À déterminer",
         shortName: m.awayTeam?.shortName || "TBD",
+        tla: m.awayTeam?.tla || null,
         crest: m.awayTeam?.crest || null,
       },
       kickoff: m.utcDate,
@@ -56,7 +57,6 @@ export default async function handler(req, res) {
           : null,
     }));
 
-    // Cache 30 secondes en prod (évite de brûler le quota)
     res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=60");
     return res.status(200).json({ matches });
   } catch (error) {
@@ -68,5 +68,5 @@ export default async function handler(req, res) {
 function normalizeStatus(status) {
   if (["IN_PLAY", "PAUSED", "LIVE", "HALFTIME"].includes(status)) return "live";
   if (["FINISHED", "AWARDED"].includes(status)) return "finished";
-  return "upcoming"; // SCHEDULED, TIMED, POSTPONED, etc.
+  return "upcoming";
 }
